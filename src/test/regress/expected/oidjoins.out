@@ -71,6 +71,7 @@ NOTICE:  checking pg_type {typmodout} => pg_proc {oid}
 NOTICE:  checking pg_type {typanalyze} => pg_proc {oid}
 NOTICE:  checking pg_type {typbasetype} => pg_type {oid}
 NOTICE:  checking pg_type {typcollation} => pg_collation {oid}
+NOTICE:  checking pg_type {typebuildzstddictionary} => pg_proc {oid}
 NOTICE:  checking pg_attribute {attrelid} => pg_class {oid}
 NOTICE:  checking pg_attribute {atttypid} => pg_type {oid}
 NOTICE:  checking pg_attribute {attcollation} => pg_collation {oid}

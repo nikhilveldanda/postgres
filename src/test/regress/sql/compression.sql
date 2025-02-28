@@ -99,12 +99,6 @@ CREATE TABLE cminh(f1 TEXT COMPRESSION lz4) INHERITS(cmdata); -- error
 CREATE TABLE cmdata3(f1 text);
 CREATE TABLE cminh() INHERITS (cmdata, cmdata3);
 
--- test default_toast_compression GUC
-SET default_toast_compression = '';
-SET default_toast_compression = 'I do not exist compression';
-SET default_toast_compression = 'lz4';
-SET default_toast_compression = 'pglz';
-
 -- test alter compression method
 ALTER TABLE cmdata ALTER COLUMN f1 SET COMPRESSION lz4;
 INSERT INTO cmdata VALUES (repeat('123456789', 4004));

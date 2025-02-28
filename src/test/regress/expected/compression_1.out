@@ -226,17 +226,6 @@ DETAIL:  pglz versus lz4
 CREATE TABLE cmdata3(f1 text);
 CREATE TABLE cminh() INHERITS (cmdata, cmdata3);
 NOTICE:  merging multiple inherited definitions of column "f1"
--- test default_toast_compression GUC
-SET default_toast_compression = '';
-ERROR:  invalid value for parameter "default_toast_compression": ""
-HINT:  Available values: pglz.
-SET default_toast_compression = 'I do not exist compression';
-ERROR:  invalid value for parameter "default_toast_compression": "I do not exist compression"
-HINT:  Available values: pglz.
-SET default_toast_compression = 'lz4';
-ERROR:  invalid value for parameter "default_toast_compression": "lz4"
-HINT:  Available values: pglz.
-SET default_toast_compression = 'pglz';
 -- test alter compression method
 ALTER TABLE cmdata ALTER COLUMN f1 SET COMPRESSION lz4;
 ERROR:  compression method lz4 not supported

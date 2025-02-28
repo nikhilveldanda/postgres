@@ -34,6 +34,7 @@ backend_sources += files(
   'pg_type.c',
   'storage.c',
   'toasting.c',
+  'pg_zstd_dictionaries.c',
 )
 
 

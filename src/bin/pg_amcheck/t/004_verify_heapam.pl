@@ -75,7 +75,7 @@ use Test::More;
 #    xx                     t_bits: x			offset = 23		C
 #    xx xx xx xx xx xx xx xx   'a': xxxxxxxx	offset = 24		LL
 #    xx xx xx xx xx xx xx xx   'b': xxxxxxxx	offset = 32		CCCCCCCC
-#    xx xx xx xx xx xx xx xx   'c': xxxxxxxx	offset = 40		CCllLL
+#    xx xx xx xx xx xx xx xx   'c': xxxxxxxx	offset = 40		CCllLLL
 #    xx xx xx xx xx xx xx xx      : xxxxxxxx	 ...continued
 #    xx xx                        : xx			 ...continued
 #
@@ -83,8 +83,8 @@ use Test::More;
 # it is convenient enough to do it this way.  We define packing code
 # constants here, where they can be compared easily against the layout.
 
-use constant HEAPTUPLE_PACK_CODE => 'LLLSSSSSCCLLCCCCCCCCCCllLL';
-use constant HEAPTUPLE_PACK_LENGTH => 58;    # Total size
+use constant HEAPTUPLE_PACK_CODE => 'LLLSSSSSCCLLCCCCCCCCCCllLLL';
+use constant HEAPTUPLE_PACK_LENGTH => 62;    # Total size
 
 # Read a tuple of our table from a heap page.
 #
@@ -130,7 +130,8 @@ sub read_tuple
 		c_va_rawsize => shift,
 		c_va_extinfo => shift,
 		c_va_valueid => shift,
-		c_va_toastrelid => shift);
+		c_va_toastrelid => shift,
+		c_va_cmp_alg => shift);
 	# Stitch together the text for column 'b'
 	$tup{b} = join('', map { chr($tup{"b_body$_"}) } (1 .. 7));
 	return \%tup;
@@ -163,7 +164,8 @@ sub write_tuple
 		$tup->{b_body6}, $tup->{b_body7},
 		$tup->{c_va_header}, $tup->{c_va_vartag},
 		$tup->{c_va_rawsize}, $tup->{c_va_extinfo},
-		$tup->{c_va_valueid}, $tup->{c_va_toastrelid});
+		$tup->{c_va_valueid}, $tup->{c_va_toastrelid}, 
+		$tup->{c_va_cmp_alg});
 	sysseek($fh, $offset, 0)
 	  or BAIL_OUT("sysseek failed: $!");
 	defined(syswrite($fh, $buffer, HEAPTUPLE_PACK_LENGTH))
@@ -496,7 +498,7 @@ for (my $tupidx = 0; $tupidx < $ROWCOUNT; $tupidx++)
 		$tup->{t_hoff} += 128;
 
 		push @expected,
-		  qr/${$header}data begins at offset 152 beyond the tuple length 58/,
+		  qr/${$header}data begins at offset 152 beyond the tuple length 62/,
 		  qr/${$header}tuple data should begin at byte 24, but actually begins at byte 152 \(3 attributes, no nulls\)/;
 	}
 	elsif ($offnum == 6)

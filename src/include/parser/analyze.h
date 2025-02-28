@@ -17,6 +17,7 @@
 #include "nodes/params.h"
 #include "nodes/queryjumble.h"
 #include "parser/parse_node.h"
+#include "access/htup.h"
 
 /* Hook for plugins to get control at end of parse analysis */
 typedef void (*post_parse_analyze_hook_type) (ParseState *pstate,
@@ -63,5 +64,9 @@ extern List *BuildOnConflictExcludedTargetlist(Relation targetrel,
 											   Index exclRelIndex);
 
 extern SortGroupClause *makeSortGroupClauseForSetOp(Oid rescoltype, bool require_hash);
+
+extern int	acquire_sample_rows(Relation onerel, int elevel,
+								HeapTuple *rows, int targrows,
+								double *totalrows, double *totaldeadrows);
 
 #endif							/* ANALYZE_H */
