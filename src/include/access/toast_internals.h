@@ -35,7 +35,8 @@ typedef struct toast_compress_header
 	do {																				\
 		Assert((len) > 0 && (len) <= VARLENA_EXTSIZE_MASK);								\
 		Assert((cm_method) == TOAST_PGLZ_COMPRESSION_ID ||								\
-				(cm_method) == TOAST_LZ4_COMPRESSION_ID);								\
+				(cm_method) == TOAST_LZ4_COMPRESSION_ID	||								\
+				(cm_method) == TOAST_ZSTD_NODICT_COMPRESSION_ID);						\
 		if (!TOAST_CMPID_EXTENDED((cm_method)))											\
 		{																				\
 			((toast_compress_header *)(ptr))->tcinfo =									\
