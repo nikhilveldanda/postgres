@@ -483,6 +483,7 @@ CompositeIOData
 CompositeTypeStmt
 CompoundAffixFlag
 CompressFileHandle
+CompressionInfo
 CompressionLocation
 CompressorState
 ComputeXidHorizonsResult
@@ -4154,6 +4155,7 @@ uuid_t
 va_list
 vacuumingOptions
 validate_string_relopt
+varatt_cmp_extended
 varatt_expanded
 varattrib_1b
 varattrib_1b_e
