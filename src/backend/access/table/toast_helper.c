@@ -229,8 +229,10 @@ toast_tuple_try_compression(ToastTupleContext *ttc, int attribute)
 	Datum	   *value = &ttc->ttc_values[attribute];
 	Datum		new_value;
 	ToastAttrInfo *attr = &ttc->ttc_attr[attribute];
+	Form_pg_attribute att = TupleDescAttr(ttc->ttc_rel->rd_att, attribute);
+	CompressionInfo cmp = setup_cmp_info(attr->tai_compression, att);
 
-	new_value = toast_compress_datum(*value, attr->tai_compression);
+	new_value = toast_compress_datum(*value, cmp);
 
 	if (DatumGetPointer(new_value) != NULL)
 	{
