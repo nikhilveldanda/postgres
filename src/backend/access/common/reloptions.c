@@ -24,6 +24,7 @@
 #include "access/nbtree.h"
 #include "access/reloptions.h"
 #include "access/spgist_private.h"
+#include "access/toast_compression.h"
 #include "catalog/pg_type.h"
 #include "commands/defrem.h"
 #include "commands/tablespace.h"
@@ -381,7 +382,15 @@ static relopt_int intRelOpts[] =
 		},
 		-1, 0, 1024
 	},
-
+	{
+		{
+			"zstd_level",
+			"Set column's ZSTD compression level",
+			RELOPT_KIND_ATTRIBUTE,
+			ShareUpdateExclusiveLock
+		},
+		DEFAULT_ZSTD_LEVEL, MIN_ZSTD_LEVEL, MAX_ZSTD_LEVEL
+	},
 	/* list terminator */
 	{{NULL}}
 };
@@ -2097,7 +2106,8 @@ attribute_reloptions(Datum reloptions, bool validate)
 {
 	static const relopt_parse_elt tab[] = {
 		{"n_distinct", RELOPT_TYPE_REAL, offsetof(AttributeOpts, n_distinct)},
-		{"n_distinct_inherited", RELOPT_TYPE_REAL, offsetof(AttributeOpts, n_distinct_inherited)}
+		{"n_distinct_inherited", RELOPT_TYPE_REAL, offsetof(AttributeOpts, n_distinct_inherited)},
+		{"zstd_level", RELOPT_TYPE_INT, offsetof(AttributeOpts, zstd_level)},
 	};
 
 	return (bytea *) build_reloptions(reloptions, validate,
