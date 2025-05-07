@@ -350,7 +350,8 @@ typedef struct
 #define VARATT_EXTERNAL_SET_SIZE_AND_COMPRESS_METHOD(toast_pointer, len, cm) \
 	do { \
 		Assert((cm) == TOAST_PGLZ_COMPRESSION_ID || \
-				(cm) == TOAST_LZ4_COMPRESSION_ID); \
+				(cm) == TOAST_LZ4_COMPRESSION_ID	||	\
+				(cm) == TOAST_ZSTD_NODICT_COMPRESSION_ID); \
 		if (!TOAST_CMPID_EXTENDED((cm))) \
 		{ \
 			/* Store the actual method in va_extinfo */ \

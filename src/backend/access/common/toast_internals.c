@@ -67,6 +67,10 @@ toast_compress_datum(Datum value, CompressionInfo cmp)
 			tmp = lz4_compress_datum((const struct varlena *) value);
 			cmid = TOAST_LZ4_COMPRESSION_ID;
 			break;
+		case TOAST_ZSTD_NODICT_COMPRESSION:
+			tmp = zstd_nodict_compress_datum((const struct varlena *) value, cmp);
+			cmid = TOAST_ZSTD_NODICT_COMPRESSION_ID;
+			break;
 		default:
 			elog(ERROR, "invalid compression method %c", cmp.cmethod);
 	}
