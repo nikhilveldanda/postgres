@@ -62,6 +62,7 @@
 #include "catalog/pg_ts_template.h"
 #include "catalog/pg_type.h"
 #include "catalog/pg_user_mapping.h"
+#include "catalog/pg_zstd_dictionaries.h"
 #include "commands/dbcommands.h"
 #include "commands/defrem.h"
 #include "commands/event_trigger.h"
@@ -636,6 +637,20 @@ static const ObjectPropertyType ObjectProperty[] =
 		OBJECT_USER_MAPPING,
 		false
 	},
+	{
+		"zstd dictionaries",
+		ZstdDictionariesRelationId,
+		ZstdDictidIndexId,
+		ZSTDDICTIDOID,
+		-1,
+		Anum_pg_zstd_dictionaries_dictid,
+		InvalidAttrNumber,
+		InvalidAttrNumber,
+		InvalidAttrNumber,
+		InvalidAttrNumber,
+		OBJECT_ZSTD_DICTIONARY,
+		true
+	},
 };
 
 /*
@@ -831,6 +846,9 @@ static const struct object_type_map
 	},
 	{
 		"statistics object", OBJECT_STATISTIC_EXT
+	},
+	{
+		"zstd dictionary", OBJECT_ZSTD_DICTIONARY
 	}
 };
 
@@ -1127,6 +1145,26 @@ get_object_address(ObjectType objtype, Node *object,
 															 missing_ok);
 				address.objectSubId = 0;
 				break;
+			case OBJECT_ZSTD_DICTIONARY:
+				{
+					Oid			dictid = oidparse(object);
+					HeapTuple	tuple = SearchSysCache1(ZSTDDICTIDOID, ObjectIdGetDatum(dictid));
+
+					if (!HeapTupleIsValid(tuple))
+					{
+						if (!missing_ok)
+							ereport(ERROR,
+									(errcode(ERRCODE_UNDEFINED_OBJECT),
+									 errmsg("zstd dictionary %u does not exist",
+											dictid)));
+					}
+					ReleaseSysCache(tuple);
+
+					address.classId = ZstdDictionariesRelationId;
+					address.objectId = dictid;
+					address.objectSubId = 0;
+					break;
+				}
 				/* no default, to let compiler warn about missing case */
 		}
 
@@ -2172,6 +2210,23 @@ pg_get_object_address(PG_FUNCTION_ARGS)
 					 errmsg("large object OID may not be null")));
 		objnode = (Node *) makeFloat(TextDatumGetCString(elems[0]));
 	}
+	else if (type == OBJECT_ZSTD_DICTIONARY)
+	{
+		Datum	   *elems;
+		bool	   *nulls;
+		int			nelems;
+
+		deconstruct_array_builtin(namearr, TEXTOID, &elems, &nulls, &nelems);
+		if (nelems != 1)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg("name list length must be exactly %d", 1)));
+		if (nulls[0])
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg("zstd dictionary OID may not be null")));
+		objnode = (Node *) makeFloat(TextDatumGetCString(elems[0]));
+	}
 	else
 	{
 		name = textarray_to_strvaluelist(namearr);
@@ -2354,6 +2409,7 @@ pg_get_object_address(PG_FUNCTION_ARGS)
 				break;
 			}
 		case OBJECT_LARGEOBJECT:
+		case OBJECT_ZSTD_DICTIONARY:
 			/* already handled above */
 			break;
 			/* no default, to let compiler warn about missing case */
@@ -2557,6 +2613,7 @@ check_object_ownership(Oid roleid, ObjectType objtype, ObjectAddress address,
 		case OBJECT_PUBLICATION_NAMESPACE:
 		case OBJECT_PUBLICATION_REL:
 		case OBJECT_USER_MAPPING:
+		case OBJECT_ZSTD_DICTIONARY:
 			/* These are currently not supported or don't make sense here. */
 			elog(ERROR, "unsupported object type: %d", (int) objtype);
 			break;
@@ -4067,7 +4124,26 @@ getObjectDescription(const ObjectAddress *object, bool missing_ok)
 				ReleaseSysCache(trfTup);
 				break;
 			}
+		case ZstdDictionariesRelationId:
+			{
+				HeapTuple	htup;
+				Form_pg_zstd_dictionaries zstd;
 
+				htup = SearchSysCache1(ZSTDDICTIDOID, ObjectIdGetDatum(object->objectId));
+				if (!HeapTupleIsValid(htup))
+				{
+					if (!missing_ok)
+						elog(ERROR, "could not find tuple for dictid %u",
+							 object->objectId);
+					break;
+				}
+
+				zstd = (Form_pg_zstd_dictionaries) GETSTRUCT(htup);
+				appendStringInfo(&buffer, _("Dictionary Id %d"), zstd->dictid);
+
+				ReleaseSysCache(htup);
+				break;
+			}
 		default:
 			elog(ERROR, "unsupported object class: %u", object->classId);
 	}

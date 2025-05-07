@@ -463,6 +463,7 @@ static const struct config_enum_entry default_toast_compression_options[] = {
 #endif
 #ifdef  USE_ZSTD
 	{"zstd_nodict", TOAST_ZSTD_NODICT_COMPRESSION, false},
+	{"zstd_dict", TOAST_ZSTD_DICT_COMPRESSION, false},
 #endif
 	{NULL, 0, false}
 };

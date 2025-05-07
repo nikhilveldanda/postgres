@@ -14,6 +14,7 @@
 #include "fe_utils/string_utils.h"
 #include "pg_upgrade.h"
 #include "common/unicode_version.h"
+#include "catalog/pg_zstd_dictionaries_d.h"
 
 static void check_new_cluster_is_empty(void);
 static void check_is_install_user(ClusterInfo *cluster);
@@ -919,12 +920,29 @@ check_new_cluster_is_empty(void)
 		for (relnum = 0; relnum < rel_arr->nrels;
 			 relnum++)
 		{
-			/* pg_largeobject and its index should be skipped */
-			if (strcmp(rel_arr->rels[relnum].nspname, "pg_catalog") != 0)
-				pg_fatal("New cluster database \"%s\" is not empty: found relation \"%s.%s\"",
-						 new_cluster.dbarr.dbs[dbnum].db_name,
-						 rel_arr->rels[relnum].nspname,
-						 rel_arr->rels[relnum].relname);
+			const char *nspname = rel_arr->rels[relnum].nspname;
+			const char *relname = rel_arr->rels[relnum].relname;
+			Oid			relOid = rel_arr->rels[relnum].reloid;
+
+			/**
+			 * Allow all objects in pg_catalog
+			 * pg_largeobject, pg_zstd_dictionaries and its index should be skipped.
+			 */
+
+			if (strcmp(nspname, "pg_catalog") == 0)
+				continue;
+
+			/**
+			 * Allow the specific toast objects for pg_zstd_dictionaries:
+			 * fixed OIDs should be 9947 (toast table) or 9948 (toast index).
+			 */
+			if (strcmp(nspname, "pg_toast") == 0 && (relOid == PgZstdDictionariesToastTable || relOid == PgZstdDictionariesToastIndex))
+				continue;
+
+			pg_fatal("New cluster database \"%s\" is not empty: found relation \"%s.%s\"",
+					 new_cluster.dbarr.dbs[dbnum].db_name,
+					 nspname,
+					 relname);
 		}
 	}
 }

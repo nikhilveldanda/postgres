@@ -12566,4 +12566,39 @@
   proargnames => '{pid,io_id,io_generation,state,operation,off,length,target,handle_data_len,raw_result,result,target_desc,f_sync,f_localmem,f_buffered}',
   prosrc => 'pg_get_aios' },
 
+# ZSTD related functions
+{ oid => '9241', descr => 'array typzstdsampling.',
+  proname => 'array_typzstdsampling', provolatile => 'v', prorettype => 'bool',
+  proargtypes => 'internal internal',
+  prosrc => 'array_typzstdsampling' },
+
+{ oid => '9242', descr => 'range typzstdsampling.',
+  proname => 'range_typzstdsampling', provolatile => 'v', prorettype => 'bool',
+  proargtypes => 'internal internal',
+  prosrc => 'range_typzstdsampling' },
+
+{ oid => '9243', descr => 'multirange typzstdsampling.',
+  proname => 'multirange_typzstdsampling', provolatile => 'v', prorettype => 'bool',
+  proargtypes => 'internal internal',
+  prosrc => 'multirange_typzstdsampling' },
+
+{ oid => '9244', descr => 'composite typzstdsampling.',
+  proname => 'composite_typzstdsampling', provolatile => 'v', prorettype => 'bool',
+  proargtypes => 'internal internal',
+  prosrc => 'composite_typzstdsampling' },
+
+{ oid => '9245', descr => 'Build zstd dictionaries for a column.',
+  proname => 'build_zstd_dict_for_attribute', provolatile => 'v', prorettype => 'bool',
+  proargtypes => 'text int4', proparallel => 'u',
+  prosrc => 'build_zstd_dict_for_attribute' },
+
+{ oid => '9246', descr => 'ZSTD standard sampling for jsonb',
+  proname => 'std_zstd_sampling_for_jsonb', provolatile => 'v', prorettype => 'bool',
+  proargtypes => 'internal internal',
+  prosrc => 'std_zstd_sampling_for_jsonb' },
+
+{ oid => '9247', descr => 'ZSTD standard sampling for text',
+  proname => 'std_zstd_sampling_for_text', provolatile => 'v', prorettype => 'bool',
+  proargtypes => 'internal internal',
+  prosrc => 'std_zstd_sampling_for_text' },
 ]

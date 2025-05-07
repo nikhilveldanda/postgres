@@ -501,6 +501,7 @@ lookup_type_cache(Oid type_id, int flags)
 		typentry->typelem = typtup->typelem;
 		typentry->typarray = typtup->typarray;
 		typentry->typcollation = typtup->typcollation;
+		typentry->typzstdsampling = typtup->typzstdsampling;
 		typentry->flags |= TCFLAGS_HAVE_PG_TYPE_DATA;
 
 		/* If it's a domain, immediately thread it into the domain cache list */
@@ -547,6 +548,7 @@ lookup_type_cache(Oid type_id, int flags)
 		typentry->typelem = typtup->typelem;
 		typentry->typarray = typtup->typarray;
 		typentry->typcollation = typtup->typcollation;
+		typentry->typzstdsampling = typtup->typzstdsampling;
 		typentry->flags |= TCFLAGS_HAVE_PG_TYPE_DATA;
 
 		ReleaseSysCache(tp);

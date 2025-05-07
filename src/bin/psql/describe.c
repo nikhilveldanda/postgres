@@ -2172,8 +2172,9 @@ describeOneTableDetails(const char *schemaname,
 			printTableAddCell(&cont, (compression[0] == 'p' ? "pglz" :
 									  (compression[0] == 'l' ? "lz4" :
 									   (compression[0] == 'n' ? "zstd_nodict" :
-										(compression[0] == '\0' ? "" :
-										 "???")))),
+										(compression[0] == 'd' ? "zstd_dict" :
+										 (compression[0] == '\0' ? "" :
+										  "???"))))),
 							  false, false);
 		}
 

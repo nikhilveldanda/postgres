@@ -37,6 +37,7 @@
 #include "catalog/namespace.h"
 #include "catalog/pg_database.h"
 #include "catalog/pg_inherits.h"
+#include "catalog/pg_zstd_dictionaries.h"
 #include "commands/cluster.h"
 #include "commands/defrem.h"
 #include "commands/progress.h"
@@ -2313,6 +2314,9 @@ vacuum_rel(Oid relid, RangeVar *relation, VacuumParams *params,
 
 		vacuum_rel(toast_relid, NULL, &toast_vacuum_params, bstrategy);
 	}
+
+	/* Generate or cleanup unused ZSTD dictionaries. */
+	generate_zstd_dictionaries_for_relation(relid);
 
 	/*
 	 * Now release the session-level lock on the main table.

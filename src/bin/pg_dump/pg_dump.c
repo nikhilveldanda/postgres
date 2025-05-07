@@ -53,6 +53,7 @@
 #include "catalog/pg_publication_d.h"
 #include "catalog/pg_subscription_d.h"
 #include "catalog/pg_type_d.h"
+#include "catalog/pg_zstd_dictionaries_d.h"
 #include "common/connect.h"
 #include "common/int.h"
 #include "common/relpath.h"
@@ -3644,6 +3645,78 @@ dumpDatabase(Archive *fout)
 		destroyPQExpBuffer(loFrozenQry);
 		destroyPQExpBuffer(loHorizonQry);
 		destroyPQExpBuffer(loOutQry);
+	}
+
+	if (dopt->binary_upgrade && fout->remoteVersion >= 180000)
+	{
+		PGresult   *zstd_res = NULL;
+		PQExpBuffer zstdFrozenQry = createPQExpBuffer();
+		PQExpBuffer zstdOutQry = createPQExpBuffer();
+		PQExpBuffer zstdHorizonQry = createPQExpBuffer();
+		int			ii_relfrozenxid,
+					ii_relfilenode,
+					ii_oid,
+					ii_relminmxid;
+
+		/* Build query to fetch pg_class information */
+		appendPQExpBuffer(zstdFrozenQry,
+						  "SELECT relfrozenxid, relminmxid, relfilenode, oid\n"
+						  "FROM pg_catalog.pg_class\n"
+						  "WHERE oid IN (%u, %u, %u, %u);\n",
+						  ZstdDictionariesRelationId,
+						  PgZstdDictionariesToastTable, /* toast table */
+						  PgZstdDictionariesToastIndex, /* toast table index */
+						  ZstdDictidIndexId);	/* index */
+
+		zstd_res = ExecuteSqlQuery(fout, zstdFrozenQry->data, PGRES_TUPLES_OK);
+
+		ii_relfrozenxid = PQfnumber(zstd_res, "relfrozenxid");
+		ii_relminmxid = PQfnumber(zstd_res, "relminmxid");
+		ii_relfilenode = PQfnumber(zstd_res, "relfilenode");
+		ii_oid = PQfnumber(zstd_res, "oid");
+
+		appendPQExpBufferStr(zstdHorizonQry,
+							 "\n-- For binary upgrade, set pg_zstd_dictionaries relfilenode, relfrozenxid, and relminmxid\n");
+		appendPQExpBufferStr(zstdOutQry,
+							 "\n-- For binary upgrade, preserve pg_zstd_dictionaries and related relfilenodes\n");
+
+		/* Loop over each result row and build update statements */
+		for (int i = 0; i < PQntuples(zstd_res); ++i)
+		{
+			Oid			oid = atooid(PQgetvalue(zstd_res, i, ii_oid));
+			Oid			relfilenumber = atooid(PQgetvalue(zstd_res, i, ii_relfilenode));
+
+			appendPQExpBuffer(zstdHorizonQry,
+							  "UPDATE pg_catalog.pg_class\n"
+							  "SET relfrozenxid = '%u', relminmxid = '%u', relfilenode = %u\n"
+							  "WHERE oid = %u;\n",
+							  atooid(PQgetvalue(zstd_res, i, ii_relfrozenxid)),
+							  atooid(PQgetvalue(zstd_res, i, ii_relminmxid)),
+							  relfilenumber,
+							  oid);
+
+			if (oid == ZstdDictionariesRelationId || oid == PgZstdDictionariesToastTable)
+				appendPQExpBuffer(zstdOutQry,
+								  "SELECT pg_catalog.binary_upgrade_set_next_heap_relfilenode('%u'::pg_catalog.oid);\n",
+								  relfilenumber);
+			else if (oid == PgZstdDictionariesToastIndex || oid == ZstdDictidIndexId)
+				appendPQExpBuffer(zstdOutQry,
+								  "SELECT pg_catalog.binary_upgrade_set_next_index_relfilenode('%u'::pg_catalog.oid);\n",
+								  relfilenumber);
+		}
+
+		appendPQExpBufferStr(zstdOutQry, zstdHorizonQry->data);
+
+		ArchiveEntry(fout, nilCatalogId, createDumpId(),
+					 ARCHIVE_OPTS(.tag = "pg_zstd_dictionaries",
+								  .description = "pg_zstd_dictionaries",
+								  .section = SECTION_PRE_DATA,
+								  .createStmt = zstdOutQry->data));
+
+		PQclear(zstd_res);
+		destroyPQExpBuffer(zstdFrozenQry);
+		destroyPQExpBuffer(zstdHorizonQry);
+		destroyPQExpBuffer(zstdOutQry);
 	}
 
 	PQclear(res);
@@ -9061,29 +9134,32 @@ getTableAttrs(Archive *fout, TableInfo *tblinfo, int numTables)
 	 * collation is different from their type's default, we use a CASE here to
 	 * suppress uninteresting attcollations cheaply.
 	 */
-	appendPQExpBufferStr(q,
-						 "SELECT\n"
-						 "a.attrelid,\n"
-						 "a.attnum,\n"
-						 "a.attname,\n"
-						 "a.attstattarget,\n"
-						 "a.attstorage,\n"
-						 "t.typstorage,\n"
-						 "a.atthasdef,\n"
-						 "a.attisdropped,\n"
-						 "a.attlen,\n"
-						 "a.attalign,\n"
-						 "a.attislocal,\n"
-						 "pg_catalog.format_type(t.oid, a.atttypmod) AS atttypname,\n"
-						 "array_to_string(a.attoptions, ', ') AS attoptions,\n"
-						 "CASE WHEN a.attcollation <> t.typcollation "
-						 "THEN a.attcollation ELSE 0 END AS attcollation,\n"
-						 "pg_catalog.array_to_string(ARRAY("
-						 "SELECT pg_catalog.quote_ident(option_name) || "
-						 "' ' || pg_catalog.quote_literal(option_value) "
-						 "FROM pg_catalog.pg_options_to_table(attfdwoptions) "
-						 "ORDER BY option_name"
-						 "), E',\n    ') AS attfdwoptions,\n");
+	appendPQExpBuffer(q,
+					  "SELECT\n"
+					  "  a.attrelid,\n"
+					  "  a.attnum,\n"
+					  "  a.attname,\n"
+					  "  a.attstattarget,\n"
+					  "  a.attstorage,\n"
+					  "  t.typstorage,\n"
+					  "  a.atthasdef,\n"
+					  "  a.attisdropped,\n"
+					  "  a.attlen,\n"
+					  "  a.attalign,\n"
+					  "  a.attislocal,\n"
+					  "  pg_catalog.format_type(t.oid, a.atttypmod) AS atttypname,\n"
+					  "  array_to_string(ARRAY(\n"
+					  "    SELECT x FROM unnest(a.attoptions) AS x %s\n"
+					  "  ), ', ') AS attoptions,\n"
+					  "  CASE WHEN a.attcollation <> t.typcollation"
+					  "       THEN a.attcollation ELSE 0 END AS attcollation,\n"
+					  "  pg_catalog.array_to_string(ARRAY("
+					  "    SELECT pg_catalog.quote_ident(option_name) || ' ' || "
+					  "           pg_catalog.quote_literal(option_value)"
+					  "    FROM pg_catalog.pg_options_to_table(attfdwoptions)"
+					  "    ORDER BY option_name"
+					  "  ), E',\n    ') AS attfdwoptions,\n",
+					  dopt->binary_upgrade ? "" : "WHERE x NOT LIKE 'dictid=%'");
 
 	/*
 	 * Find out any NOT NULL markings for each column.  In 18 and up we read
@@ -12168,12 +12244,14 @@ dumpBaseType(Archive *fout, const TypeInfo *tyinfo)
 	char	   *typmodout;
 	char	   *typanalyze;
 	char	   *typsubscript;
+	char	   *typzstdsampling;
 	Oid			typreceiveoid;
 	Oid			typsendoid;
 	Oid			typmodinoid;
 	Oid			typmodoutoid;
 	Oid			typanalyzeoid;
 	Oid			typsubscriptoid;
+	Oid			typzstdsamplingoid;
 	char	   *typcategory;
 	char	   *typispreferred;
 	char	   *typdelim;
@@ -12206,10 +12284,18 @@ dumpBaseType(Archive *fout, const TypeInfo *tyinfo)
 		if (fout->remoteVersion >= 140000)
 			appendPQExpBufferStr(query,
 								 "typsubscript, "
-								 "typsubscript::pg_catalog.oid AS typsubscriptoid ");
+								 "typsubscript::pg_catalog.oid AS typsubscriptoid, ");
 		else
 			appendPQExpBufferStr(query,
-								 "'-' AS typsubscript, 0 AS typsubscriptoid ");
+								 "'-' AS typsubscript, 0 AS typsubscriptoid, ");
+
+		if (fout->remoteVersion >= 180000)
+			appendPQExpBufferStr(query,
+								 "typzstdsampling, "
+								 "typzstdsampling::pg_catalog.oid AS typzstdsamplingoid ");
+		else
+			appendPQExpBufferStr(query,
+								 "'-' AS typzstdsampling, 0 AS typzstdsamplingoid ");
 
 		appendPQExpBufferStr(query, "FROM pg_catalog.pg_type "
 							 "WHERE oid = $1");
@@ -12234,12 +12320,14 @@ dumpBaseType(Archive *fout, const TypeInfo *tyinfo)
 	typmodout = PQgetvalue(res, 0, PQfnumber(res, "typmodout"));
 	typanalyze = PQgetvalue(res, 0, PQfnumber(res, "typanalyze"));
 	typsubscript = PQgetvalue(res, 0, PQfnumber(res, "typsubscript"));
+	typzstdsampling = PQgetvalue(res, 0, PQfnumber(res, "typzstdsampling"));
 	typreceiveoid = atooid(PQgetvalue(res, 0, PQfnumber(res, "typreceiveoid")));
 	typsendoid = atooid(PQgetvalue(res, 0, PQfnumber(res, "typsendoid")));
 	typmodinoid = atooid(PQgetvalue(res, 0, PQfnumber(res, "typmodinoid")));
 	typmodoutoid = atooid(PQgetvalue(res, 0, PQfnumber(res, "typmodoutoid")));
 	typanalyzeoid = atooid(PQgetvalue(res, 0, PQfnumber(res, "typanalyzeoid")));
 	typsubscriptoid = atooid(PQgetvalue(res, 0, PQfnumber(res, "typsubscriptoid")));
+	typzstdsamplingoid = atooid(PQgetvalue(res, 0, PQfnumber(res, "typzstdsamplingoid")));
 	typcategory = PQgetvalue(res, 0, PQfnumber(res, "typcategory"));
 	typispreferred = PQgetvalue(res, 0, PQfnumber(res, "typispreferred"));
 	typdelim = PQgetvalue(res, 0, PQfnumber(res, "typdelim"));
@@ -12295,7 +12383,8 @@ dumpBaseType(Archive *fout, const TypeInfo *tyinfo)
 		appendPQExpBuffer(q, ",\n    TYPMOD_OUT = %s", typmodout);
 	if (OidIsValid(typanalyzeoid))
 		appendPQExpBuffer(q, ",\n    ANALYZE = %s", typanalyze);
-
+	if (OidIsValid(typzstdsamplingoid))
+		appendPQExpBuffer(q, ",\n    ZSTD_SAMPLING = %s", typzstdsampling);
 	if (strcmp(typcollatable, "t") == 0)
 		appendPQExpBufferStr(q, ",\n    COLLATABLE = true");
 
@@ -17551,6 +17640,12 @@ dumpTableSchema(Archive *fout, const TableInfo *tbinfo)
 						break;
 					case 'l':
 						cmname = "lz4";
+						break;
+					case 'n':
+						cmname = "zstd_nodict";
+						break;
+					case 'd':
+						cmname = "zstd_dict";
 						break;
 					default:
 						cmname = NULL;

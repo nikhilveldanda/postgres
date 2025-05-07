@@ -56,6 +56,7 @@ CREATE TYPE <replaceable class="parameter">name</replaceable> (
     [ , ELEMENT = <replaceable class="parameter">element</replaceable> ]
     [ , DELIMITER = <replaceable class="parameter">delimiter</replaceable> ]
     [ , COLLATABLE = <replaceable class="parameter">collatable</replaceable> ]
+    [ , ZSTD_SAMPLING = <replaceable class="parameter">zstd_sampling_function</replaceable> ]
 )
 
 CREATE TYPE <replaceable class="parameter">name</replaceable>
@@ -211,7 +212,8 @@ CREATE TYPE <replaceable class="parameter">name</replaceable>
    <replaceable class="parameter">type_modifier_input_function</replaceable>,
    <replaceable class="parameter">type_modifier_output_function</replaceable>,
    <replaceable class="parameter">analyze_function</replaceable>, and
-   <replaceable class="parameter">subscript_function</replaceable>
+   <replaceable class="parameter">subscript_function</replaceable>, and
+   <replaceable class="parameter">zstd_sampling_function</replaceable>
    are optional.  Generally these functions have to be coded in C
    or another low-level language.
   </para>
@@ -491,6 +493,15 @@ CREATE TYPE <replaceable class="parameter">name</replaceable>
    make use of the collation information; this does not happen
    automatically merely by marking the type collatable.
   </para>
+
+  <para>
+    The optional <replaceable class="parameter">zstd_sampling_function</replaceable>
+    performs type-specific sampling for a column of the corresponding data type.
+    By default, for <type>jsonb</type> data type, the function <literal>std_zstd_sampling_for_jsonb</literal> is defined. It attempts to gather samples for a jsonb
+    and returns a sample buffer for zstd dictionary training. The training function must be declared to accept two arguments of type <type>internal</type> and return an <type>internal</type> result.
+    The detailed information for zstd training function is provided in <filename>src/backend/catalog/pg_zstd_dictionaries.c</filename>.
+  </para>
+
   </refsect2>
 
   <refsect2 id="sql-createtype-array" xreflabel="Array Types">
@@ -844,6 +855,14 @@ CREATE TYPE <replaceable class="parameter">name</replaceable>
       True if this type's operations can use collation information.
       The default is false.
      </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><replaceable class="parameter">zstd_sampling</replaceable></term>
+    <listitem>
+        <para>
+        Specifies the name of a function that performs sampling on specific type.
+        </para>
     </listitem>
    </varlistentry>
   </variablelist>

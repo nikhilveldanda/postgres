@@ -2366,6 +2366,7 @@ typedef enum ObjectType
 	OBJECT_TYPE,
 	OBJECT_USER_MAPPING,
 	OBJECT_VIEW,
+	OBJECT_ZSTD_DICTIONARY,
 } ObjectType;
 
 /* ----------------------

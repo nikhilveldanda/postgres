@@ -391,6 +391,18 @@ static relopt_int intRelOpts[] =
 		},
 		DEFAULT_ZSTD_LEVEL, MIN_ZSTD_LEVEL, MAX_ZSTD_LEVEL
 	},
+	{
+		{
+			"zstd_dict_size",
+			"Max dict size for zstd",
+			RELOPT_KIND_ATTRIBUTE,
+			ShareUpdateExclusiveLock
+		},
+		DEFAULT_ZSTD_DICT_SIZE, 0, 112640	/* Max dict size(110 KB), 0
+											 * indicates don't use dictionary
+											 * for compression
+											 * https://github.com/facebook/zstd/blob/769723aee2540aaff8951ac432a1babed358aa71/programs/zstd.1.md?plain=1#L549 */
+	},
 	/* list terminator */
 	{{NULL}}
 };
@@ -478,6 +490,15 @@ static relopt_real realRelOpts[] =
 			ShareUpdateExclusiveLock
 		},
 		0, -1.0, DBL_MAX
+	},
+	{
+		{
+			"zstd_dictid",
+			"Current dictid for column",
+			RELOPT_KIND_ATTRIBUTE,
+			ShareUpdateExclusiveLock
+		},
+		InvalidDictId, InvalidDictId, UINT32_MAX
 	},
 	{
 		{
@@ -2108,6 +2129,8 @@ attribute_reloptions(Datum reloptions, bool validate)
 		{"n_distinct", RELOPT_TYPE_REAL, offsetof(AttributeOpts, n_distinct)},
 		{"n_distinct_inherited", RELOPT_TYPE_REAL, offsetof(AttributeOpts, n_distinct_inherited)},
 		{"zstd_level", RELOPT_TYPE_INT, offsetof(AttributeOpts, zstd_level)},
+		{"zstd_dict_size", RELOPT_TYPE_INT, offsetof(AttributeOpts, zstd_dict_size)},
+		{"zstd_dictid", RELOPT_TYPE_REAL, offsetof(AttributeOpts, zstd_dictid)},
 	};
 
 	return (bytea *) build_reloptions(reloptions, validate,
