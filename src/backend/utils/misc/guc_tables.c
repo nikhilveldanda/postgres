@@ -461,6 +461,9 @@ static const struct config_enum_entry default_toast_compression_options[] = {
 #ifdef  USE_LZ4
 	{"lz4", TOAST_LZ4_COMPRESSION, false},
 #endif
+#ifdef  USE_ZSTD
+	{"zstd_nodict", TOAST_ZSTD_NODICT_COMPRESSION, false},
+#endif
 	{NULL, 0, false}
 };
 
