@@ -26,11 +26,20 @@
 #include "common/pg_lzcompress.h"
 #include "varatt.h"
 #include "utils/attoptcache.h"
+#include "catalog/pg_zstd_dictionaries.h"
 
 /* GUC */
 int			default_toast_compression = TOAST_PGLZ_COMPRESSION;
 
 #ifdef USE_ZSTD
+static ZSTD_CCtx *ZstdCCtx = NULL;
+static ZSTD_CDict * ZstdCCtxCDict = NULL;
+static Oid	ZstdCCtxDictID = InvalidDictId;
+
+static ZSTD_DCtx *ZstdDCtx = NULL;
+static ZSTD_DDict * ZstdDCtxDDict = NULL;
+static Oid	ZstdDCtxDictID = InvalidDictId;
+
 #define ZSTD_CHECK_ERROR(zstd_ret, msg) \
 	do { \
 		if (ZSTD_isError(zstd_ret)) \
@@ -379,6 +388,283 @@ zstd_nodict_decompress_datum_slice(const struct varlena *value, int32 slicelengt
 #endif
 }
 
+struct varlena *
+zstd_dict_compress_datum(const struct varlena *value, CompressionInfo cmp)
+{
+#ifdef USE_ZSTD
+	uint32		valsize = VARSIZE_ANY_EXHDR(value);
+	size_t		max_size = ZSTD_compressBound(valsize);
+	struct varlena *compressed;
+	size_t		cmp_size,
+				ret;
+
+	/* Create the session CCtx if it hasn't been yet */
+	if (ZstdCCtx == NULL)
+	{
+		ZstdCCtx = ZSTD_createCCtx();
+		if (!ZstdCCtx)
+			ereport(ERROR, (errmsg("could not create ZSTD_CCtx")));
+		ZstdCCtxDictID = InvalidDictId;
+	}
+
+	/* Reset the context to clear any prior state */
+	ret = ZSTD_CCtx_reset(ZstdCCtx, ZSTD_reset_session_only);
+	ZSTD_CHECK_ERROR(ret, "failed to reset ZSTD CCtx");
+
+	/* Set compression level */
+	ret = ZSTD_CCtx_setParameter(ZstdCCtx, ZSTD_c_compressionLevel, cmp.zstd_level);
+	ZSTD_CHECK_ERROR(ret, "failed to set ZSTD compression level");
+
+	/* Check and update dictionary if changed */
+	if (ZstdCCtxDictID != cmp.zstd_dictid)
+	{
+		/* If there's a previous dictionary, detach and free it */
+		if (ZstdCCtxCDict)
+		{
+			ZSTD_freeCDict(ZstdCCtxCDict);
+			ZstdCCtxCDict = NULL;
+		}
+
+		if (cmp.zstd_dictid != InvalidDictId)
+		{
+			bytea	   *dict_bytea = get_zstd_dict(cmp.zstd_dictid);
+			const void *dict_buffer = VARDATA_ANY(dict_bytea);
+			uint32		dict_size = VARSIZE_ANY(dict_bytea) - VARHDRSZ;
+			ZSTD_CDict *cdict = ZSTD_createCDict(dict_buffer, dict_size, cmp.zstd_level);
+
+			pfree(dict_bytea);
+
+			if (!cdict)
+				ereport(ERROR, (errmsg("Failed to create ZSTD compression dictionary")));
+
+			ret = ZSTD_CCtx_refCDict(ZstdCCtx, cdict);
+			ZSTD_CHECK_ERROR(ret, "failed to load ZSTD dictionary");
+
+			ZstdCCtxCDict = cdict;
+		}
+		else
+		{
+			/* Unload any previously used dictionary by passing NULL */
+			ret = ZSTD_CCtx_refCDict(ZstdCCtx, NULL);
+			ZSTD_CHECK_ERROR(ret, "failed to unload ZSTD dictionary");
+		}
+
+		ZstdCCtxDictID = cmp.zstd_dictid;
+	}
+
+	/* Allocate space for the compressed varlena (header + data) */
+	compressed = (struct varlena *) palloc(max_size + VARHDRSZ_4BCE + sizeof(Oid));
+
+	cmp_size = ZSTD_compress2(ZstdCCtx,
+							  VARDATA_4BCE(compressed) + sizeof(Oid),
+							  max_size,
+							  VARDATA_ANY(value),
+							  valsize);
+
+	if (ZSTD_isError(cmp_size))
+	{
+		pfree(compressed);
+		ZSTD_CHECK_ERROR(cmp_size, "ZSTD compression failed");
+	}
+
+	/*
+	 * If compression did not reduce size, return NULL so that the
+	 * uncompressed data is stored
+	 */
+	if (cmp_size > valsize)
+	{
+		pfree(compressed);
+		return NULL;
+	}
+
+	/* Set ZSTD dictionary Id */
+	memcpy((char *) compressed + VARHDRSZ_4BCE, &cmp.zstd_dictid, sizeof(Oid));
+
+	/* Set the compressed size in the varlena header */
+	SET_VARSIZE_COMPRESSED(compressed, cmp_size + VARHDRSZ_4BCE + sizeof(Oid));
+	return compressed;
+
+#else
+	COMPRESSION_METHOD_NOT_SUPPORTED("zstd_dict");
+	return NULL;
+#endif
+}
+
+struct varlena *
+zstd_dict_decompress_datum(const struct varlena *value)
+{
+#ifdef USE_ZSTD
+	uint32		actual_size_exhdr = VARDATA_COMPRESSED_GET_EXTSIZE(value);
+	uint32		zstd_compressed_len = VARSIZE_ANY(value) - VARHDRSZ_4BCE - sizeof(Oid);
+	struct varlena *result;
+	size_t		uncmp_size,
+				ret;
+	Oid			dictid;
+
+	memcpy(&dictid, (char *) (value) + VARHDRSZ_4BCE, sizeof(Oid));
+
+	if (ZstdDCtx == NULL)
+	{
+		ZstdDCtx = ZSTD_createDCtx();
+		if (!ZstdDCtx)
+			ereport(ERROR, (errmsg("could not create ZSTD_DCtx")));
+		ZstdDCtxDictID = InvalidDictId;
+	}
+
+	/* Reset the context to clear any prior state */
+	ret = ZSTD_DCtx_reset(ZstdDCtx, ZSTD_reset_session_only);
+	ZSTD_CHECK_ERROR(ret, "failed to reset ZSTD DCtx");
+
+	if (ZstdDCtxDictID != dictid)
+	{
+		if (ZstdDCtxDDict)
+		{
+			ZSTD_freeDDict(ZstdDCtxDDict);
+			ZstdDCtxDDict = NULL;
+		}
+
+		if (dictid != InvalidDictId)
+		{
+			bytea	   *dict_bytea = get_zstd_dict(dictid);
+			const void *dict_buffer = VARDATA_ANY(dict_bytea);
+			uint32		dict_size = VARSIZE_ANY(dict_bytea) - VARHDRSZ;
+			ZSTD_DDict *ddict = ZSTD_createDDict(dict_buffer, dict_size);
+
+			pfree(dict_bytea);
+
+			if (!ddict)
+				ereport(ERROR, (errmsg("Failed to create ZSTD decompression dictionary")));
+
+			ret = ZSTD_DCtx_refDDict(ZstdDCtx, ddict);
+			ZSTD_CHECK_ERROR(ret, "failed to load ZSTD dictionary");
+
+			ZstdDCtxDDict = ddict;
+		}
+		else
+		{
+			/* Unload any previously used dictionary by passing NULL */
+			ret = ZSTD_DCtx_refDDict(ZstdDCtx, NULL);
+			ZSTD_CHECK_ERROR(ret, "failed to unload ZSTD dictionary");
+		}
+
+		/* Update the tracked dictionary ID */
+		ZstdDCtxDictID = dictid;
+	}
+
+	/* Allocate space for the uncompressed data */
+	result = (struct varlena *) palloc(actual_size_exhdr + VARHDRSZ);
+
+	uncmp_size = ZSTD_decompressDCtx(ZstdDCtx,
+									 VARDATA(result),
+									 actual_size_exhdr,
+									 VARDATA_4BCE(value) + sizeof(Oid),
+									 zstd_compressed_len);
+
+	if (ZSTD_isError(uncmp_size))
+	{
+		pfree(result);
+		ZSTD_CHECK_ERROR(uncmp_size, "ZSTD decompression failed");
+	}
+
+	/* Set final size in the varlena header */
+	SET_VARSIZE(result, uncmp_size + VARHDRSZ);
+	return result;
+
+#else
+	COMPRESSION_METHOD_NOT_SUPPORTED("zstd_dict");
+	return NULL;
+#endif
+}
+
+struct varlena *
+zstd_dict_decompress_datum_slice(const struct varlena *value, int32 slicelength)
+{
+#ifdef USE_ZSTD
+	struct varlena *result;
+	ZSTD_inBuffer inBuf;
+	ZSTD_outBuffer outBuf;
+	size_t		ret;
+	Oid			dictid;
+
+	memcpy(&dictid, (char *) (value) + VARHDRSZ_4BCE, sizeof(Oid));
+
+	if (ZstdDCtx == NULL)
+	{
+		ZstdDCtx = ZSTD_createDCtx();
+		if (!ZstdDCtx)
+			elog(ERROR, "could not create ZSTD_DCtx");
+		ZstdDCtxDictID = InvalidDictId;
+	}
+
+	/* Reset the context to clear any prior state */
+	ret = ZSTD_DCtx_reset(ZstdDCtx, ZSTD_reset_session_only);
+	ZSTD_CHECK_ERROR(ret, "failed to reset ZSTD_DCtx");
+
+	if (ZstdDCtxDictID != dictid)
+	{
+		if (ZstdDCtxDDict)
+		{
+			ZSTD_freeDDict(ZstdDCtxDDict);
+			ZstdDCtxDDict = NULL;
+		}
+
+		if (dictid != InvalidDictId)
+		{
+			bytea	   *dict_bytea = get_zstd_dict(dictid);
+			const void *dict_buffer = VARDATA_ANY(dict_bytea);
+			uint32		dict_size = VARSIZE_ANY(dict_bytea) - VARHDRSZ;
+			ZSTD_DDict *ddict = ZSTD_createDDict(dict_buffer, dict_size);
+
+			pfree(dict_bytea);
+
+			if (!ddict)
+				ereport(ERROR, (errmsg("Failed to create ZSTD decompression dictionary")));
+
+			ret = ZSTD_DCtx_refDDict(ZstdDCtx, ddict);
+			ZSTD_CHECK_ERROR(ret, "failed to load ZSTD dictionary");
+
+			ZstdDCtxDDict = ddict;
+		}
+		else
+		{
+			/* Unload any previously used dictionary by passing NULL */
+			ret = ZSTD_DCtx_refDDict(ZstdDCtx, NULL);
+			ZSTD_CHECK_ERROR(ret, "failed to unload ZSTD dictionary");
+		}
+
+		/* Update the tracked dictionary ID */
+		ZstdDCtxDictID = dictid;
+	}
+
+	inBuf.src = VARDATA_4BCE(value) + sizeof(Oid);
+	inBuf.size = VARSIZE_ANY(value) - VARHDRSZ_4BCE - sizeof(Oid);
+	inBuf.pos = 0;
+
+	result = (struct varlena *) palloc(slicelength + VARHDRSZ);
+	outBuf.dst = (char *) result + VARHDRSZ;
+	outBuf.size = slicelength;
+	outBuf.pos = 0;
+
+	/* Common decompression loop */
+	while (inBuf.pos < inBuf.size && outBuf.pos < outBuf.size)
+	{
+		ret = ZSTD_decompressStream(ZstdDCtx, &outBuf, &inBuf);
+		if (ZSTD_isError(ret))
+		{
+			pfree(result);
+			ZSTD_CHECK_ERROR(ret, "zstd decompression failed");
+		}
+	}
+
+	Assert(outBuf.size == slicelength && outBuf.pos == slicelength);
+	SET_VARSIZE(result, outBuf.pos + VARHDRSZ);
+	return result;
+#else
+	COMPRESSION_METHOD_NOT_SUPPORTED("zstd_dict");
+	return NULL;
+#endif
+}
+
 /*
  * Extract compression ID from a varlena.
  *
@@ -437,6 +723,13 @@ CompressionNameToMethod(const char *compression)
 #endif
 		return TOAST_ZSTD_NODICT_COMPRESSION;
 	}
+	else if (strcmp(compression, "zstd_dict") == 0)
+	{
+#ifndef USE_ZSTD
+		COMPRESSION_METHOD_NOT_SUPPORTED("zstd_dict");
+#endif
+		return TOAST_ZSTD_DICT_COMPRESSION;
+	}
 
 	return InvalidCompressionMethod;
 }
@@ -455,6 +748,8 @@ GetCompressionMethodName(char method)
 			return "lz4";
 		case TOAST_ZSTD_NODICT_COMPRESSION:
 			return "zstd_nodict";
+		case TOAST_ZSTD_DICT_COMPRESSION:
+			return "zstd_dict";
 		default:
 			elog(ERROR, "invalid compression method %c", method);
 			return NULL;		/* keep compiler quiet */
@@ -469,6 +764,7 @@ setup_cmp_info(char cmethod, Form_pg_attribute att)
 	/* initialize from the attribute’s default settings */
 	info.cmethod = cmethod;
 	info.zstd_level = DEFAULT_ZSTD_LEVEL;
+	info.zstd_dictid = InvalidDictId;
 
 	/* If the compression method is not valid, use the current default */
 	if (!CompressionMethodIsValid(cmethod))
@@ -485,6 +781,23 @@ setup_cmp_info(char cmethod, Form_pg_attribute att)
 
 				if (aopt != NULL)
 					info.zstd_level = aopt->zstd_level;
+			}
+			break;
+		case TOAST_ZSTD_DICT_COMPRESSION:
+			{
+				AttributeOpts *aopt = get_attribute_options(att->attrelid, att->attnum);
+
+				if (aopt != NULL)
+				{
+					info.zstd_level = aopt->zstd_level;
+
+					/*
+					 * If user marks zstd dict size as 0, then we don't use
+					 * dict compression for this attribute.
+					 */
+					if (aopt->zstd_dict_size > 0)
+						info.zstd_dictid = (Oid) aopt->zstd_dictid;
+				}
 			}
 			break;
 		default:

@@ -136,6 +136,7 @@ extern void DeleteRelationTuple(Oid relid);
 extern void DeleteAttributeTuples(Oid relid);
 extern void DeleteSystemAttributeTuples(Oid relid);
 extern void RemoveAttributeById(Oid relid, AttrNumber attnum);
+extern void DeleteZSTDDictionaryTuples(Oid relid, AttrNumber attno);
 
 extern void CopyStatistics(Oid fromrelid, Oid torelid);
 extern void RemoveStatistics(Oid relid, AttrNumber attnum);

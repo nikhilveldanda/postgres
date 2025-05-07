@@ -227,6 +227,11 @@ CATALOG(pg_type,1247,TypeRelationId) BKI_BOOTSTRAP BKI_ROWTYPE_OID(71,TypeRelati
 	 */
 	Oid			typcollation BKI_DEFAULT(0) BKI_LOOKUP_OPT(pg_collation);
 
+	/*
+	 * Custom zstd sampling procedure for the datatype.
+	 */
+	regproc		typzstdsampling BKI_DEFAULT(0) BKI_ARRAY_DEFAULT(array_typzstdsampling) BKI_LOOKUP_OPT(pg_proc);
+
 #ifdef CATALOG_VARLEN			/* variable-length fields start here */
 
 	/*
@@ -380,7 +385,8 @@ extern ObjectAddress TypeCreate(Oid newTypeOid,
 								int32 typeMod,
 								int32 typNDims,
 								bool typeNotNull,
-								Oid typeCollation);
+								Oid typeCollation,
+								Oid zstdSamplingProcedure);
 
 extern void GenerateTypeDependencies(HeapTuple typeTuple,
 									 Relation typeCatalog,

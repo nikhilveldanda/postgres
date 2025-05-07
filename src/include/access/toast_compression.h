@@ -34,7 +34,8 @@ typedef enum ToastCompressionId
 	TOAST_PGLZ_COMPRESSION_ID = 0,
 	TOAST_LZ4_COMPRESSION_ID = 1,
 	TOAST_ZSTD_NODICT_COMPRESSION_ID = 2,
-	TOAST_INVALID_COMPRESSION_ID = 3,
+	TOAST_ZSTD_DICT_COMPRESSION_ID = 3,
+	TOAST_INVALID_COMPRESSION_ID = 4,
 } ToastCompressionId;
 
 /*
@@ -60,6 +61,7 @@ typedef struct CompressionInfo
 {
 	char		cmethod;
 	int			zstd_level;
+	Oid			zstd_dictid;
 } CompressionInfo;
 
 /*
@@ -70,18 +72,23 @@ typedef struct CompressionInfo
 #define TOAST_PGLZ_COMPRESSION			'p'
 #define TOAST_LZ4_COMPRESSION			'l'
 #define TOAST_ZSTD_NODICT_COMPRESSION	'n'
+#define TOAST_ZSTD_DICT_COMPRESSION		'd'
 #define InvalidCompressionMethod		'\0'
 
 #define CompressionMethodIsValid(cm)  ((cm) != InvalidCompressionMethod)
+
+#define InvalidDictId					0
 
 #ifdef USE_ZSTD
 #define DEFAULT_ZSTD_LEVEL					ZSTD_CLEVEL_DEFAULT
 #define MIN_ZSTD_LEVEL						(int)-ZSTD_BLOCKSIZE_MAX
 #define MAX_ZSTD_LEVEL						22
+#define DEFAULT_ZSTD_DICT_SIZE 				(4 * 1024)	/* 4 KB */
 #else
 #define DEFAULT_ZSTD_LEVEL					0
 #define MIN_ZSTD_LEVEL						0
 #define MAX_ZSTD_LEVEL						0
+#define DEFAULT_ZSTD_DICT_SIZE 				0
 #endif
 
 /* pglz compression/decompression routines */
@@ -100,6 +107,11 @@ extern struct varlena *lz4_decompress_datum_slice(const struct varlena *value,
 extern struct varlena *zstd_nodict_compress_datum(const struct varlena *value, CompressionInfo cmp);
 extern struct varlena *zstd_nodict_decompress_datum(const struct varlena *value);
 extern struct varlena *zstd_nodict_decompress_datum_slice(const struct varlena *value, int32 slicelength);
+
+/* zstd dict compression/decompression routines */
+extern struct varlena *zstd_dict_compress_datum(const struct varlena *value, CompressionInfo cmp);
+extern struct varlena *zstd_dict_decompress_datum(const struct varlena *value);
+extern struct varlena *zstd_dict_decompress_datum_slice(const struct varlena *value, int32 slicelength);
 
 /* other stuff */
 extern ToastCompressionId toast_get_compression_id(struct varlena *attr);

@@ -22,6 +22,8 @@ typedef struct AttributeOpts
 	float8		n_distinct;
 	float8		n_distinct_inherited;
 	int			zstd_level;
+	int			zstd_dict_size;
+	float8		zstd_dictid;
 } AttributeOpts;
 
 extern AttributeOpts *get_attribute_options(Oid attrelid, int attnum);

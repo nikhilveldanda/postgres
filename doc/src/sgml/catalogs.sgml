@@ -369,6 +369,12 @@
       <entry><link linkend="catalog-pg-user-mapping"><structname>pg_user_mapping</structname></link></entry>
       <entry>mappings of users to foreign servers</entry>
      </row>
+
+     <row>
+      <entry><link linkend="catalog-pg-zstd-dictionaries"><structname>pg_zstd_dictionaries</structname></link></entry>
+      <entry>Zstandard dictionaries</entry>
+     </row>
+
     </tbody>
    </tgroup>
   </table>
@@ -9778,5 +9784,54 @@ SCRAM-SHA-256$<replaceable>&lt;iteration count&gt;</replaceable>:<replaceable>&l
    </tgroup>
   </table>
  </sect1>
+
+
+<sect1 id="catalog-pg-zstd-dictionaries">
+  <title><structname>pg_zstd_dictionaries</structname></title>
+
+  <indexterm zone="catalog-pg-zstd-dictionaries">
+    <primary>pg_zstd_dictionaries</primary>
+  </indexterm>
+
+  <para>
+    The catalog <structname>pg_zstd_dictionaries</structname> maintains the dictionaries essential for Zstandard compression and decompression.
+  </para>
+
+  <table>
+    <title><structname>pg_zstd_dictionaries</structname> Columns</title>
+    <tgroup cols="1">
+      <thead>
+        <row>
+          <entry role="catalog_table_entry">
+            <para role="column_definition">Column Type</para>
+            <para>Description</para>
+          </entry>
+        </row>
+      </thead>
+      <tbody>
+        <row>
+          <entry role="catalog_table_entry">
+            <para role="column_definition">
+              <structfield>dictid</structfield> <type>oid</type>
+            </para>
+            <para>
+              Dictionary identifier; a non-null OID that uniquely identifies a dictionary.
+            </para>
+          </entry>
+        </row>
+        <row>
+          <entry role="catalog_table_entry">
+            <para role="column_definition">
+              <structfield>dict</structfield> <type>bytea</type>
+            </para>
+            <para>
+              Variable-length field containing the zstd dictionary data. This field must not be null.
+            </para>
+          </entry>
+        </row>
+      </tbody>
+    </tgroup>
+  </table>
+</sect1>
 
 </chapter>

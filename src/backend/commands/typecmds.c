@@ -95,6 +95,7 @@ typedef struct
 	bool		updateTypmodout;
 	bool		updateAnalyze;
 	bool		updateSubscript;
+	bool		updateZstdSampling;
 	/* New values for relevant attributes */
 	char		storage;
 	Oid			receiveOid;
@@ -103,6 +104,7 @@ typedef struct
 	Oid			typmodoutOid;
 	Oid			analyzeOid;
 	Oid			subscriptOid;
+	Oid			zstdSamplingOid;
 } AlterTypeRecurseParams;
 
 /* Potentially set by pg_upgrade_support functions */
@@ -122,6 +124,7 @@ static Oid	findTypeSendFunction(List *procname, Oid typeOid);
 static Oid	findTypeTypmodinFunction(List *procname);
 static Oid	findTypeTypmodoutFunction(List *procname);
 static Oid	findTypeAnalyzeFunction(List *procname, Oid typeOid);
+static Oid	findTypeZstdSamplingFunction(List *procname, Oid typeOid);
 static Oid	findTypeSubscriptingFunction(List *procname, Oid typeOid);
 static Oid	findRangeSubOpclass(List *opcname, Oid subtype);
 static Oid	findRangeCanonicalFunction(List *procname, Oid typeOid);
@@ -162,6 +165,7 @@ DefineType(ParseState *pstate, List *names, List *parameters)
 	List	   *typmodoutName = NIL;
 	List	   *analyzeName = NIL;
 	List	   *subscriptName = NIL;
+	List	   *zstdSamplingName = NIL;
 	char		category = TYPCATEGORY_USER;
 	bool		preferred = false;
 	char		delimiter = DEFAULT_TYPDELIM;
@@ -190,6 +194,7 @@ DefineType(ParseState *pstate, List *names, List *parameters)
 	DefElem    *alignmentEl = NULL;
 	DefElem    *storageEl = NULL;
 	DefElem    *collatableEl = NULL;
+	DefElem    *zstdSamplingEl = NULL;
 	Oid			inputOid;
 	Oid			outputOid;
 	Oid			receiveOid = InvalidOid;
@@ -198,6 +203,7 @@ DefineType(ParseState *pstate, List *names, List *parameters)
 	Oid			typmodoutOid = InvalidOid;
 	Oid			analyzeOid = InvalidOid;
 	Oid			subscriptOid = InvalidOid;
+	Oid			zstdSamplingOid = InvalidOid;
 	char	   *array_type;
 	Oid			array_oid;
 	Oid			typoid;
@@ -323,6 +329,8 @@ DefineType(ParseState *pstate, List *names, List *parameters)
 			defelp = &storageEl;
 		else if (strcmp(defel->defname, "collatable") == 0)
 			defelp = &collatableEl;
+		else if (strcmp(defel->defname, "zstd_sampling") == 0)
+			defelp = &zstdSamplingEl;
 		else
 		{
 			/* WARNING, not ERROR, for historical backwards-compatibility */
@@ -455,6 +463,8 @@ DefineType(ParseState *pstate, List *names, List *parameters)
 	}
 	if (collatableEl)
 		collation = defGetBoolean(collatableEl) ? DEFAULT_COLLATION_OID : InvalidOid;
+	if (zstdSamplingEl)
+		zstdSamplingName = defGetQualifiedName(zstdSamplingEl);
 
 	/*
 	 * make sure we have our required definitions
@@ -516,6 +526,15 @@ DefineType(ParseState *pstate, List *names, List *parameters)
 					 errmsg("element type cannot be specified without a subscripting function")));
 	}
 
+	if (zstdSamplingName)
+	{
+		if (internalLength != -1)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
+					 errmsg("type zstd_sampling function must be specified only if data type is variable length.")));
+		zstdSamplingOid = findTypeZstdSamplingFunction(zstdSamplingName, typoid);
+	}
+
 	/*
 	 * Check permissions on functions.  We choose to require the creator/owner
 	 * of a type to also own the underlying functions.  Since creating a type
@@ -550,6 +569,9 @@ DefineType(ParseState *pstate, List *names, List *parameters)
 	if (analyzeOid && !object_ownercheck(ProcedureRelationId, analyzeOid, GetUserId()))
 		aclcheck_error(ACLCHECK_NOT_OWNER, OBJECT_FUNCTION,
 					   NameListToString(analyzeName));
+	if (zstdSamplingOid && !object_ownercheck(ProcedureRelationId, zstdSamplingOid, GetUserId()))
+		aclcheck_error(ACLCHECK_NOT_OWNER, OBJECT_FUNCTION,
+					   NameListToString(zstdSamplingName));
 	if (subscriptOid && !object_ownercheck(ProcedureRelationId, subscriptOid, GetUserId()))
 		aclcheck_error(ACLCHECK_NOT_OWNER, OBJECT_FUNCTION,
 					   NameListToString(subscriptName));
@@ -601,7 +623,8 @@ DefineType(ParseState *pstate, List *names, List *parameters)
 				   -1,			/* typMod (Domains only) */
 				   0,			/* Array Dimensions of typbasetype */
 				   false,		/* Type NOT NULL */
-				   collation);	/* type's collation */
+				   collation,	/* type's collation */
+				   zstdSamplingOid);	/* zstd_sampling procedure */
 	Assert(typoid == address.objectId);
 
 	/*
@@ -643,7 +666,8 @@ DefineType(ParseState *pstate, List *names, List *parameters)
 			   -1,				/* typMod (Domains only) */
 			   0,				/* Array dimensions of typbasetype */
 			   false,			/* Type NOT NULL */
-			   collation);		/* type's collation */
+			   collation,		/* type's collation */
+			   F_ARRAY_TYPZSTDSAMPLING);	/* zstd_sampling procedure */
 
 	pfree(array_type);
 
@@ -706,6 +730,7 @@ DefineDomain(ParseState *pstate, CreateDomainStmt *stmt)
 	Oid			receiveProcedure;
 	Oid			sendProcedure;
 	Oid			analyzeProcedure;
+	Oid			zstdSamplingOid;
 	bool		byValue;
 	char		category;
 	char		delimiter;
@@ -841,6 +866,9 @@ DefineDomain(ParseState *pstate, CreateDomainStmt *stmt)
 
 	/* Analysis function */
 	analyzeProcedure = baseType->typanalyze;
+
+	/* Generate dictionary function */
+	zstdSamplingOid = baseType->typzstdsampling;
 
 	/*
 	 * Domains don't need a subscript function, since they are not
@@ -1078,7 +1106,8 @@ DefineDomain(ParseState *pstate, CreateDomainStmt *stmt)
 				   basetypeMod, /* typeMod value */
 				   typNDims,	/* Array dimensions for base type */
 				   typNotNull,	/* Type NOT NULL */
-				   domaincoll); /* type's collation */
+				   domaincoll,	/* type's collation */
+				   zstdSamplingOid);	/* zstd_sampling procedure */
 
 	/*
 	 * Create the array type that goes with it.
@@ -1119,7 +1148,8 @@ DefineDomain(ParseState *pstate, CreateDomainStmt *stmt)
 			   -1,				/* typMod (Domains only) */
 			   0,				/* Array dimensions of typbasetype */
 			   false,			/* Type NOT NULL */
-			   domaincoll);		/* type's collation */
+			   domaincoll,		/* type's collation */
+			   F_ARRAY_TYPZSTDSAMPLING);	/* zstd_sampling procedure */
 
 	pfree(domainArrayName);
 
@@ -1241,7 +1271,8 @@ DefineEnum(CreateEnumStmt *stmt)
 				   -1,			/* typMod (Domains only) */
 				   0,			/* Array dimensions of typbasetype */
 				   false,		/* Type NOT NULL */
-				   InvalidOid); /* type's collation */
+				   InvalidOid,	/* type's collation */
+				   InvalidOid); /* generate dictionary procedure - default */
 
 	/* Enter the enum's values into pg_enum */
 	EnumValuesCreate(enumTypeAddr.objectId, stmt->vals);
@@ -1282,7 +1313,8 @@ DefineEnum(CreateEnumStmt *stmt)
 			   -1,				/* typMod (Domains only) */
 			   0,				/* Array dimensions of typbasetype */
 			   false,			/* Type NOT NULL */
-			   InvalidOid);		/* type's collation */
+			   InvalidOid,		/* type's collation */
+			   InvalidOid);		/* generate dictionary procedure - default */
 
 	pfree(enumArrayName);
 
@@ -1583,7 +1615,9 @@ DefineRange(ParseState *pstate, CreateRangeStmt *stmt)
 				   -1,			/* typMod (Domains only) */
 				   0,			/* Array dimensions of typbasetype */
 				   false,		/* Type NOT NULL */
-				   InvalidOid); /* type's collation (ranges never have one) */
+				   InvalidOid,	/* type's collation (ranges never have one) */
+				   F_RANGE_TYPZSTDSAMPLING);	/* generate dictionary
+												 * procedure - default */
 	Assert(typoid == InvalidOid || typoid == address.objectId);
 	typoid = address.objectId;
 
@@ -1646,11 +1680,13 @@ DefineRange(ParseState *pstate, CreateRangeStmt *stmt)
 				   NULL,		/* no binary form available either */
 				   false,		/* never passed by value */
 				   alignment,	/* alignment */
-				   'x',			/* TOAST strategy (always extended) */
+				   TYPSTORAGE_EXTENDED, /* TOAST strategy (always extended) */
 				   -1,			/* typMod (Domains only) */
 				   0,			/* Array dimensions of typbasetype */
 				   false,		/* Type NOT NULL */
-				   InvalidOid); /* type's collation (ranges never have one) */
+				   InvalidOid,	/* type's collation (ranges never have one) */
+				   F_MULTIRANGE_TYPZSTDSAMPLING);	/* generate dictionary
+													 * procedure - default */
 	Assert(multirangeOid == mltrngaddress.objectId);
 
 	/* Create the entry in pg_range */
@@ -1693,7 +1729,9 @@ DefineRange(ParseState *pstate, CreateRangeStmt *stmt)
 			   -1,				/* typMod (Domains only) */
 			   0,				/* Array dimensions of typbasetype */
 			   false,			/* Type NOT NULL */
-			   InvalidOid);		/* typcollation */
+			   InvalidOid,		/* typcollation */
+			   F_ARRAY_TYPZSTDSAMPLING);	/* generate dictionary procedure -
+											 * default */
 
 	pfree(rangeArrayName);
 
@@ -1728,11 +1766,13 @@ DefineRange(ParseState *pstate, CreateRangeStmt *stmt)
 			   NULL,			/* binary default isn't sent either */
 			   false,			/* never passed by value */
 			   alignment,		/* alignment - same as range's */
-			   'x',				/* ARRAY is always toastable */
+			   TYPSTORAGE_EXTENDED, /* ARRAY is always toastable */
 			   -1,				/* typMod (Domains only) */
 			   0,				/* Array dimensions of typbasetype */
 			   false,			/* Type NOT NULL */
-			   InvalidOid);		/* typcollation */
+			   InvalidOid,		/* typcollation */
+			   F_ARRAY_TYPZSTDSAMPLING);	/* generate dictionary procedure -
+											 * default */
 
 	/* And create the constructor functions for this range type */
 	makeRangeConstructors(typeName, typeNamespace, typoid, rangeSubtype);
@@ -2257,6 +2297,31 @@ findTypeAnalyzeFunction(List *procname, Oid typeOid)
 				(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
 				 errmsg("type analyze function %s must return type %s",
 						NameListToString(procname), "boolean")));
+
+	return procOid;
+}
+
+static Oid
+findTypeZstdSamplingFunction(List *procname, Oid typeOid)
+{
+	Oid			argList[2];
+	Oid			procOid;
+
+	argList[0] = INTERNALOID;
+	argList[1] = INTERNALOID;
+
+	procOid = LookupFuncName(procname, 2, argList, true);
+	if (!OidIsValid(procOid))
+		ereport(ERROR,
+				(errcode(ERRCODE_UNDEFINED_FUNCTION),
+				 errmsg("function %s does not exist",
+						func_signature_string(procname, 2, NIL, argList))));
+
+	if (get_func_rettype(procOid) != BOOLOID)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
+				 errmsg("type build zstd dictionary function %s must return type %s",
+						NameListToString(procname), "internal")));
 
 	return procOid;
 }
@@ -4444,6 +4509,19 @@ AlterType(AlterTypeStmt *stmt)
 			/* Replacing a subscript function requires superuser. */
 			requireSuper = true;
 		}
+		else if (strcmp(defel->defname, "zstd_sampling") == 0)
+		{
+			if (defel->arg != NULL)
+				atparams.zstdSamplingOid =
+					findTypeZstdSamplingFunction(defGetQualifiedName(defel),
+												 typeOid);
+			else
+				atparams.zstdSamplingOid = InvalidOid;	/* NONE, remove function */
+
+			atparams.updateZstdSampling = true;
+			/* Replacing a canonical function requires superuser. */
+			requireSuper = true;
+		}
 
 		/*
 		 * The rest of the options that CREATE accepts cannot be changed.
@@ -4605,6 +4683,11 @@ AlterTypeRecurse(Oid typeOid, bool isImplicitArray,
 	{
 		replaces[Anum_pg_type_typsubscript - 1] = true;
 		values[Anum_pg_type_typsubscript - 1] = ObjectIdGetDatum(atparams->subscriptOid);
+	}
+	if (atparams->updateZstdSampling)
+	{
+		replaces[Anum_pg_type_typzstdsampling - 1] = true;
+		values[Anum_pg_type_typzstdsampling - 1] = ObjectIdGetDatum(atparams->zstdSamplingOid);
 	}
 
 	newtup = heap_modify_tuple(tup, RelationGetDescr(catalog),

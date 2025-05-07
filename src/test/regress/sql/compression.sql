@@ -102,6 +102,7 @@ CREATE TABLE cminh() INHERITS (cmdata, cmdata3);
 -- test default_toast_compression GUC
 SET default_toast_compression = '';
 SET default_toast_compression = 'I do not exist compression';
+SET default_toast_compression = 'zstd_dict';
 SET default_toast_compression = 'zstd_nodict';
 SET default_toast_compression = 'lz4';
 SET default_toast_compression = 'pglz';

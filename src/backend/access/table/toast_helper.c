@@ -532,6 +532,11 @@ flatten_datum(Datum value, Oid typid, bool *changed)
 				case TOAST_LZ4_COMPRESSION_ID:
 				case TOAST_ZSTD_NODICT_COMPRESSION_ID:
 					return value;
+				case TOAST_ZSTD_DICT_COMPRESSION_ID:
+					{
+						*changed = true;
+						return PointerGetDatum(PG_DETOAST_DATUM(value));
+					}
 				default:
 					elog(ERROR, "invalid compression method id %d", cmid);
 			}

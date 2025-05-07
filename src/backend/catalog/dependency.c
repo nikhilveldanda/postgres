@@ -1369,8 +1369,12 @@ doDeletion(const ObjectAddress *object, int flags)
 				else
 				{
 					if (object->objectSubId != 0)
+					{
 						RemoveAttributeById(object->objectId,
 											object->objectSubId);
+						DeleteZSTDDictionaryTuples(object->objectId,
+												   object->objectSubId);
+					}
 					else
 						heap_drop_with_catalog(object->objectId);
 				}

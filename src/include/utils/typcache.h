@@ -46,6 +46,7 @@ typedef struct TypeCacheEntry
 	Oid			typelem;
 	Oid			typarray;
 	Oid			typcollation;
+	Oid			typzstdsampling;
 
 	/*
 	 * Information obtained from opfamily entries

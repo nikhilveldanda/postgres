@@ -71,6 +71,10 @@ toast_compress_datum(Datum value, CompressionInfo cmp)
 			tmp = zstd_nodict_compress_datum((const struct varlena *) value, cmp);
 			cmid = TOAST_ZSTD_NODICT_COMPRESSION_ID;
 			break;
+		case TOAST_ZSTD_DICT_COMPRESSION:
+			tmp = zstd_dict_compress_datum((const struct varlena *) value, cmp);
+			cmid = TOAST_ZSTD_DICT_COMPRESSION_ID;
+			break;
 		default:
 			elog(ERROR, "invalid compression method %c", cmp.cmethod);
 	}

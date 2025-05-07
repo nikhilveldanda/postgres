@@ -238,10 +238,11 @@ NOTICE:  merging multiple inherited definitions of column "f1"
 -- test default_toast_compression GUC
 SET default_toast_compression = '';
 ERROR:  invalid value for parameter "default_toast_compression": ""
-HINT:  Available values: pglz, lz4, zstd_nodict.
+HINT:  Available values: pglz, lz4, zstd_nodict, zstd_dict.
 SET default_toast_compression = 'I do not exist compression';
 ERROR:  invalid value for parameter "default_toast_compression": "I do not exist compression"
-HINT:  Available values: pglz, lz4, zstd_nodict.
+HINT:  Available values: pglz, lz4, zstd_nodict, zstd_dict.
+SET default_toast_compression = 'zstd_dict';
 SET default_toast_compression = 'zstd_nodict';
 SET default_toast_compression = 'lz4';
 SET default_toast_compression = 'pglz';

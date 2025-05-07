@@ -233,6 +233,9 @@ HINT:  Available values: pglz.
 SET default_toast_compression = 'I do not exist compression';
 ERROR:  invalid value for parameter "default_toast_compression": "I do not exist compression"
 HINT:  Available values: pglz.
+SET default_toast_compression = 'zstd_dict';
+ERROR:  invalid value for parameter "default_toast_compression": "zstd_dict"
+HINT:  Available values: pglz.
 SET default_toast_compression = 'zstd_nodict';
 ERROR:  invalid value for parameter "default_toast_compression": "zstd_nodict"
 HINT:  Available values: pglz.

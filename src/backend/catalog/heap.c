@@ -54,6 +54,7 @@
 #include "catalog/pg_tablespace.h"
 #include "catalog/pg_type.h"
 #include "catalog/storage.h"
+#include "catalog/pg_zstd_dictionaries.h"
 #include "commands/tablecmds.h"
 #include "commands/typecmds.h"
 #include "common/int.h"
@@ -75,7 +76,7 @@
 #include "utils/inval.h"
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
-
+#include "access/attnum.h"
 
 /* Potentially set by pg_upgrade_support functions */
 Oid			binary_upgrade_next_heap_pg_class_oid = InvalidOid;
@@ -1071,7 +1072,10 @@ AddNewRelationType(const char *typeName,
 				   -1,			/* typmod */
 				   0,			/* array dimensions for typBaseType */
 				   false,		/* Type NOT NULL */
-				   InvalidOid); /* rowtypes never have a collation */
+				   InvalidOid,	/* rowtypes never have a collation */
+				   F_COMPOSITE_TYPZSTDSAMPLING	/* generate dictionary
+												 * procedure - default */
+		);
 }
 
 /* --------------------------------
@@ -1394,7 +1398,10 @@ heap_create_with_catalog(const char *relname,
 				   -1,			/* typmod */
 				   0,			/* array dimensions for typBaseType */
 				   false,		/* Type NOT NULL */
-				   InvalidOid); /* rowtypes never have a collation */
+				   InvalidOid,	/* rowtypes never have a collation */
+				   F_ARRAY_TYPZSTDSAMPLING	/* generate dictionary procedure -
+											 * default */
+			);
 
 		pfree(relarrayname);
 	}
@@ -1618,6 +1625,56 @@ DeleteAttributeTuples(Oid relid)
 	/* Clean up after the scan */
 	systable_endscan(scan);
 	table_close(attrel, RowExclusiveLock);
+}
+
+/*
+ * Remove pg_zstd_dictionaries rows for the given relid and attno.
+ * If attno is 0, delete all dictionaries for the table; otherwise
+ * delete only the entry for that column.
+ */
+void
+DeleteZSTDDictionaryTuples(Oid relid, AttrNumber attno)
+{
+	Relation	zstd_rel;
+	SysScanDesc scan;
+	ScanKeyData key[2];
+	int			nkeys = 0;
+	HeapTuple	zstdtup;
+
+	/* Open pg_zstd_dictionaries with RowExclusiveLock */
+	zstd_rel = table_open(ZstdDictionariesRelationId, RowExclusiveLock);
+
+	/* Always filter by relid */
+	ScanKeyInit(&key[nkeys],
+				Anum_pg_zstd_dictionaries_relid,
+				BTEqualStrategyNumber, F_OIDEQ,
+				ObjectIdGetDatum(relid));
+	nkeys++;
+
+	/* If attno != 0, also filter by attnum */
+	if (AttributeNumberIsValid(attno))
+	{
+		ScanKeyInit(&key[nkeys],
+					Anum_pg_zstd_dictionaries_attnum,
+					BTEqualStrategyNumber, F_INT2EQ,
+					Int16GetDatum(attno));
+		nkeys++;
+	}
+
+	/* Begin the scan using the relid/attnum index */
+	scan = systable_beginscan(zstd_rel,
+							  ZstdRelidAttnumIndexId,
+							  true, /* use index */
+							  NULL, /* no snapshot override */
+							  nkeys, key);
+
+	/* Delete each matching tuple */
+	while ((zstdtup = systable_getnext(scan)) != NULL)
+		CatalogTupleDelete(zstd_rel, &zstdtup->t_self);
+
+	/* Cleanup */
+	systable_endscan(scan);
+	table_close(zstd_rel, RowExclusiveLock);
 }
 
 /*
@@ -1919,6 +1976,11 @@ heap_drop_with_catalog(Oid relid)
 	 * delete relation tuple
 	 */
 	DeleteRelationTuple(relid);
+
+	/*
+	 * delete zstd dictionaries
+	 */
+	DeleteZSTDDictionaryTuples(relid, 0);
 
 	if (OidIsValid(parentOid))
 	{

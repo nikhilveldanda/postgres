@@ -498,7 +498,7 @@ get_rel_infos_query(void)
 					  "                        'binary_upgrade', 'pg_toast') AND "
 					  "      c.oid >= %u::pg_catalog.oid) OR "
 					  "     (n.nspname = 'pg_catalog' AND "
-					  "      relname IN ('pg_largeobject') ))), ",
+					  "      relname IN ('pg_largeobject', 'pg_zstd_dictionaries') ))), ",
 					  (user_opts.transfer_mode == TRANSFER_MODE_SWAP) ?
 					  ", " CppAsString2(RELKIND_SEQUENCE) : "",
 					  FirstNormalObjectId);
