@@ -612,7 +612,7 @@ raw_heap_insert(RewriteState state, HeapTuple tup)
 		Assert(!HeapTupleHasExternal(tup));
 		heaptup = tup;
 	}
-	else if (HeapTupleHasExternal(tup) || tup->t_len > TOAST_TUPLE_THRESHOLD)
+	else if (HeapTupleHasExternal(tup) || HeapTupleHasVarWidth(tup) || tup->t_len > TOAST_TUPLE_THRESHOLD)
 	{
 		int			options = HEAP_INSERT_SKIP_FSM;
 

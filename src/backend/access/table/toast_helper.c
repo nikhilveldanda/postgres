@@ -19,7 +19,17 @@
 #include "access/toast_internals.h"
 #include "catalog/pg_type_d.h"
 #include "varatt.h"
+#include "utils/lsyscache.h"
+#include "access/htup_details.h"
+#include "catalog/pg_type.h"
+#include "utils/array.h"
+#include "utils/builtins.h"
+#include "utils/rangetypes.h"
+#include "utils/multirangetypes.h"
+#include "utils/typcache.h"
+#include "miscadmin.h"
 
+static Datum flatten_datum(Datum value, Oid typid, bool *changed);
 
 /*
  * Prepare to TOAST a tuple.
@@ -144,6 +154,26 @@ toast_tuple_init(ToastTupleContext *ttc)
 				ttc->ttc_values[i] = PointerGetDatum(new_value);
 				ttc->ttc_attr[i].tai_colflags |= TOASTCOL_NEEDS_FREE;
 				ttc->ttc_flags |= (TOAST_NEEDS_CHANGE | TOAST_NEEDS_FREE);
+			}
+
+			/*
+			 * In bootstrap mode or when rewriting a heap tuple, skip
+			 * flattening of varlena values.
+			 */
+			if (!IsBootstrapProcessingMode() && !OidIsValid(ttc->ttc_rel->rd_rel->relrewrite))
+			{
+				bool		changed;
+				Datum		clean = flatten_datum(PointerGetDatum(new_value), att->atttypid, &changed);
+
+				if (changed)
+				{
+					if (ttc->ttc_attr[i].tai_oldexternal != NULL)
+						pfree(new_value);
+					new_value = (struct varlena *) DatumGetPointer(clean);
+					ttc->ttc_values[i] = clean;
+					ttc->ttc_attr[i].tai_colflags |= TOASTCOL_NEEDS_FREE;
+					ttc->ttc_flags |= (TOAST_NEEDS_CHANGE | TOAST_NEEDS_FREE);
+				}
 			}
 
 			/*
@@ -336,4 +366,369 @@ toast_delete_external(Relation rel, const Datum *values, const bool *isnull,
 				toast_delete_datum(rel, value, is_speculative);
 		}
 	}
+}
+
+/*
+ * flatten_datum
+ * -------------
+ * Recursively detoast the given Datum so that **no** varlena within it
+ * remains compressed.
+ *
+ * On entry:
+ *   •  value   — the Datum to be flattened
+ *   •  typid   — its SQL type OID
+ *   •  *changed — must point to a bool variable
+ *
+ * On exit:
+ *   •  returns a Datum that is guaranteed to have no compressed or
+ *      external varlena anywhere inside its structure
+ *   •  *changed = true if any new palloc’d copy was made (at this level
+ *      or in a recursive call), else *changed = false
+ *
+ */
+static Datum
+flatten_datum(Datum value, Oid typid, bool *changed)
+{
+	Oid			basetypid;
+	char		typtype;
+	struct varlena *attr;
+
+	*changed = false;
+
+	/* If there is no real column type (typid = 0), do nothing */
+	if (typid == InvalidOid)
+	{
+		Assert(!*changed);
+		return value;
+	}
+
+	basetypid = getBaseType(typid); /* Get basetype for Domain. */
+	typtype = get_typtype(basetypid);
+
+	/* fixed-len or by-val → already flat */
+	if (get_typlen(basetypid) > 0 || get_typbyval(basetypid))
+		return value;
+
+	attr = detoast_external_attr((struct varlena *) DatumGetPointer(value));
+	if ((Pointer) attr != DatumGetPointer(value))
+		pfree(DatumGetPointer(value));
+	value = PointerGetDatum(attr);
+
+	/* ---------- BASE / ENUM / PSEUDO ----------------------- */
+	if (typtype == TYPTYPE_BASE ||
+		typtype == TYPTYPE_ENUM ||
+		typtype == TYPTYPE_PSEUDO)
+	{
+		/* ------------ ARRAY ------------ */
+		if (type_is_array(typid))
+		{
+			ArrayType  *arr = DatumGetArrayTypeP(value);
+			TypeCacheEntry *elemC;
+			Datum	   *elems;
+			bool	   *nulls;
+			int			nitems;
+			bool		anychg = false;
+			int			i;
+			ArrayType  *newarr;
+			bool		topLevelDetoasted,
+						shortVaratt;
+
+			topLevelDetoasted = ((Pointer) arr != DatumGetPointer(value));
+			shortVaratt = VARATT_IS_SHORT(value);
+			elemC = lookup_type_cache(ARR_ELEMTYPE(arr), 0);
+
+			/* 2. fixed-len / by-val elements */
+			if (elemC->typbyval || elemC->typlen > 0)
+			{
+				if (shortVaratt)
+				{
+					pfree(arr);
+					return value;
+				}
+				else if (topLevelDetoasted)
+					*changed = true;
+
+				return PointerGetDatum(arr);
+			}
+
+			/* 3. deconstruct for variable-len elements */
+			deconstruct_array(arr,
+							  ARR_ELEMTYPE(arr),
+							  elemC->typlen,
+							  elemC->typbyval,
+							  elemC->typalign,
+							  &elems, &nulls, &nitems);
+
+			/* empty array */
+			if (nitems == 0)
+			{
+				pfree(elems);
+				pfree(nulls);
+
+				if (shortVaratt)
+				{
+					pfree(arr);
+					return value;
+				}
+				else if (topLevelDetoasted)
+					*changed = true;
+
+				return PointerGetDatum(arr);
+			}
+
+			/* 4. recurse on elements */
+			for (i = 0; i < nitems; i++)
+			{
+				if (!nulls[i])
+				{
+					bool		subchg = false;
+
+					elems[i] = flatten_datum(elems[i], ARR_ELEMTYPE(arr), &subchg);
+					anychg |= subchg;
+				}
+			}
+
+			/* 5. no change anywhere → keep original */
+			if (!anychg)
+			{
+				pfree(elems);
+				pfree(nulls);
+				if (shortVaratt)
+				{
+					pfree(arr);
+					return value;
+				}
+				else if (topLevelDetoasted)
+					*changed = true;
+				return PointerGetDatum(arr);
+			}
+
+			/* 6. build new array */
+			newarr = construct_md_array(elems, nulls,
+										ARR_NDIM(arr),
+										ARR_DIMS(arr),
+										ARR_LBOUND(arr),
+										ARR_ELEMTYPE(arr),
+										elemC->typlen,
+										elemC->typbyval,
+										elemC->typalign);
+
+			pfree(elems);
+			pfree(nulls);
+			pfree(arr);
+
+			*changed = true;
+			return PointerGetDatum(newarr);
+		}
+
+		/* ---------- VARLENA BASE TYPE ------------------------------------ */
+		if (VARATT_IS_COMPRESSED(value))
+		{
+			ToastCompressionId cmid = VARDATA_COMPRESSED_GET_COMPRESS_METHOD(value);
+
+			switch (cmid)
+			{
+				case TOAST_PGLZ_COMPRESSION_ID:
+				case TOAST_LZ4_COMPRESSION_ID:
+				case TOAST_ZSTD_NODICT_COMPRESSION_ID:
+					return value;
+				default:
+					elog(ERROR, "invalid compression method id %d", cmid);
+			}
+		}
+
+		return value;
+	}
+
+	/* ---------- COMPOSITE ------------------------------------------- */
+	if (typtype == TYPTYPE_COMPOSITE)
+	{
+		HeapTupleHeader hdr = DatumGetHeapTupleHeader(value);
+		TupleDesc	td;
+		int			natts;
+		Datum	   *vals;
+		bool	   *nulls;
+		HeapTupleData src;
+		bool		anychg = false;
+		int			i;
+		HeapTuple	newt;
+		HeapTupleHeader copy;
+		bool		topLevelDetoasted,
+					shortVaratt;
+
+		topLevelDetoasted = ((Pointer) hdr != DatumGetPointer(value));
+		shortVaratt = VARATT_IS_SHORT(value);
+
+		if (!(hdr->t_infomask & HEAP_HASVARWIDTH))
+		{
+			if (shortVaratt)
+			{
+				pfree(hdr);
+				return value;
+			}
+			else if (topLevelDetoasted)
+				*changed = true;
+			return PointerGetDatum(hdr);
+		}
+
+		td = lookup_rowtype_tupdesc(HeapTupleHeaderGetTypeId(hdr),
+									HeapTupleHeaderGetTypMod(hdr));
+		natts = td->natts;
+
+		vals = (Datum *) palloc(sizeof(Datum) * natts);
+		nulls = (bool *) palloc(sizeof(bool) * natts);
+
+		src.t_len = VARSIZE(hdr);
+		src.t_tableOid = InvalidOid;
+		src.t_data = hdr;
+		ItemPointerSetInvalid(&src.t_self);
+
+		heap_deform_tuple(&src, td, vals, nulls);
+
+		for (i = 0; i < natts; i++)
+		{
+			Form_pg_attribute att = TupleDescAttr(td, i);
+
+			if (att->attisdropped || att->atthasmissing || nulls[i])
+				continue;
+			if (att->attlen == -1)
+			{
+				bool		subchg = false;
+
+				vals[i] = flatten_datum(vals[i], att->atttypid, &subchg);
+				anychg |= subchg;
+			}
+		}
+
+		if (!anychg)
+		{
+			ReleaseTupleDesc(td);
+			pfree(vals);
+			pfree(nulls);
+			if (shortVaratt)
+			{
+				pfree(hdr);
+				return value;
+			}
+			else if (topLevelDetoasted)
+				*changed = true;
+			return PointerGetDatum(hdr);
+		}
+
+		newt = heap_form_tuple(td, vals, nulls);
+		copy = (HeapTupleHeader) palloc(newt->t_len);
+		memcpy(copy, newt->t_data, newt->t_len);
+
+		ReleaseTupleDesc(td);
+		pfree(vals);
+		pfree(nulls);
+		pfree(hdr);
+		heap_freetuple(newt);
+
+		*changed = true;
+		return PointerGetDatum(copy);
+	}
+
+	/* ---------- RANGE ----------------------------------------------- */
+	if (typtype == TYPTYPE_RANGE)
+	{
+		RangeType  *r = DatumGetRangeTypeP(value);
+		TypeCacheEntry *tc = lookup_type_cache(basetypid,
+											   TYPECACHE_RANGE_INFO);
+		RangeBound	lb,
+					ub;
+		bool		empty;
+		bool		subchg = false;
+		bool		anychg = false;
+		bool		topLevelDetoasted,
+					shortVaratt;
+
+		topLevelDetoasted = ((Pointer) r != DatumGetPointer(value));
+		shortVaratt = VARATT_IS_SHORT(value);
+
+		range_deserialize(tc, r, &lb, &ub, &empty);
+
+		if (!empty &&
+			!(tc->rngelemtype->typbyval || tc->rngelemtype->typlen > 0))
+		{
+			if (!lb.infinite)
+				lb.val = flatten_datum(lb.val,
+									   tc->rngelemtype->type_id,
+									   &subchg);
+			anychg |= subchg;
+			if (!ub.infinite)
+				ub.val = flatten_datum(ub.val,
+									   tc->rngelemtype->type_id,
+									   &subchg);
+			anychg |= subchg;
+		}
+
+		if (!anychg)
+		{
+			if (shortVaratt)
+			{
+				pfree(r);
+				return value;
+			}
+			else if (topLevelDetoasted)
+				*changed = true;
+			return PointerGetDatum(r);
+		}
+
+		pfree(r);
+		*changed = true;
+		return PointerGetDatum(make_range(tc, &lb, &ub, empty, NULL));
+	}
+
+	/* ---------- MULTIRANGE ------------------------------------------ */
+	if (typtype == TYPTYPE_MULTIRANGE)
+	{
+		MultirangeType *mr = DatumGetMultirangeTypeP(value);
+		TypeCacheEntry *tc = lookup_type_cache(basetypid,
+											   TYPECACHE_MULTIRANGE_INFO);
+		int32		nr;
+		RangeType **ranges;
+		bool		anychg = false;
+		int			i;
+		Oid			mrOid = MultirangeTypeGetOid(mr);
+		bool		topLevelDetoasted,
+					shortVaratt;
+
+		topLevelDetoasted = ((Pointer) mr != DatumGetPointer(value));
+		shortVaratt = VARATT_IS_SHORT(value);
+
+		multirange_deserialize(tc->rngtype, mr, &nr, &ranges);
+
+		for (i = 0; i < nr; i++)
+		{
+			bool		subchg = false;
+
+			ranges[i] = DatumGetRangeTypeP(
+										   flatten_datum(PointerGetDatum(ranges[i]),
+														 RangeTypeGetOid(ranges[i]),
+														 &subchg));
+			anychg |= subchg;
+		}
+
+		if (!anychg)
+		{
+			if (shortVaratt)
+			{
+				pfree(mr);
+				return value;
+			}
+			else if (topLevelDetoasted)
+				*changed = true;
+			return PointerGetDatum(mr);
+		}
+
+		pfree(mr);
+		*changed = true;
+		return PointerGetDatum(make_multirange(mrOid, tc->rngtype, nr, ranges));
+	}
+
+	elog(ERROR, "flatten_datum: unsupported type %u", typid);
+	pg_unreachable();
+	/* keep compiler happy: */
+	return (Datum) 0;
 }
