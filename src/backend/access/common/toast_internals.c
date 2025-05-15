@@ -43,7 +43,7 @@ static bool toastid_valueid_exists(Oid toastrelid, Oid valueid);
  * ----------
  */
 Datum
-toast_compress_datum(Datum value, char cmethod)
+toast_compress_datum(Datum value, CompressionInfo cmp)
 {
 	struct varlena *tmp = NULL;
 	int32		valsize;
@@ -54,14 +54,10 @@ toast_compress_datum(Datum value, char cmethod)
 
 	valsize = VARSIZE_ANY_EXHDR(DatumGetPointer(value));
 
-	/* If the compression method is not valid, use the current default */
-	if (!CompressionMethodIsValid(cmethod))
-		cmethod = default_toast_compression;
-
 	/*
 	 * Call appropriate compression routine for the compression method.
 	 */
-	switch (cmethod)
+	switch (cmp.cmethod)
 	{
 		case TOAST_PGLZ_COMPRESSION:
 			tmp = pglz_compress_datum((const struct varlena *) value);
@@ -72,7 +68,7 @@ toast_compress_datum(Datum value, char cmethod)
 			cmid = TOAST_LZ4_COMPRESSION_ID;
 			break;
 		default:
-			elog(ERROR, "invalid compression method %c", cmethod);
+			elog(ERROR, "invalid compression method %c", cmp.cmethod);
 	}
 
 	if (tmp == NULL)
@@ -143,6 +139,7 @@ toast_save_datum(Relation rel, Datum value,
 	Pointer		dval = DatumGetPointer(value);
 	int			num_indexes;
 	int			validIndex;
+	ToastCompressionId cmid = TOAST_INVALID_COMPRESSION_ID;
 
 	Assert(!VARATT_IS_EXTERNAL(value));
 
@@ -184,9 +181,9 @@ toast_save_datum(Relation rel, Datum value,
 		/* rawsize in a compressed datum is just the size of the payload */
 		toast_pointer.va_rawsize = VARDATA_COMPRESSED_GET_EXTSIZE(dval) + VARHDRSZ;
 
+		cmid = VARDATA_COMPRESSED_GET_COMPRESS_METHOD(dval);
 		/* set external size and compression method */
-		VARATT_EXTERNAL_SET_SIZE_AND_COMPRESS_METHOD(toast_pointer, data_todo,
-													 VARDATA_COMPRESSED_GET_COMPRESS_METHOD(dval));
+		VARATT_EXTERNAL_SET_SIZE_AND_COMPRESS_METHOD(&toast_pointer, data_todo, cmid);
 		/* Assert that the numbers look like it's compressed */
 		Assert(VARATT_EXTERNAL_IS_COMPRESSED(toast_pointer));
 	}
@@ -368,9 +365,10 @@ toast_save_datum(Relation rel, Datum value,
 	/*
 	 * Create the TOAST pointer value that we'll return
 	 */
-	result = (struct varlena *) palloc(TOAST_POINTER_SIZE);
+	result = (struct varlena *) palloc(TOAST_CMPID_EXTENDED(cmid) ? TOAST_POINTER_EXT_SIZE : TOAST_POINTER_NOEXT_SIZE);
 	SET_VARTAG_EXTERNAL(result, VARTAG_ONDISK);
-	memcpy(VARDATA_EXTERNAL(result), &toast_pointer, sizeof(toast_pointer));
+	memcpy(VARDATA_EXTERNAL(result), &toast_pointer,
+		   (TOAST_CMPID_EXTENDED(cmid) ? TOAST_POINTER_EXT_SIZE - VARHDRSZ_EXTERNAL : TOAST_POINTER_NOEXT_SIZE - VARHDRSZ_EXTERNAL));
 
 	return PointerGetDatum(result);
 }

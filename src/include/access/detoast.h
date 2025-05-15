@@ -23,12 +23,12 @@
 do { \
 	varattrib_1b_e *attre = (varattrib_1b_e *) (attr); \
 	Assert(VARATT_IS_EXTERNAL(attre)); \
-	Assert(VARSIZE_EXTERNAL(attre) == sizeof(toast_pointer) + VARHDRSZ_EXTERNAL); \
-	memcpy(&(toast_pointer), VARDATA_EXTERNAL(attre), sizeof(toast_pointer)); \
+	memcpy(&(toast_pointer), VARDATA_EXTERNAL(attre), (VARSIZE_EXTERNAL(attre) - VARHDRSZ_EXTERNAL)); \
 } while (0)
 
 /* Size of an EXTERNAL datum that contains a standard TOAST pointer */
-#define TOAST_POINTER_SIZE (VARHDRSZ_EXTERNAL + sizeof(varatt_external))
+#define TOAST_POINTER_NOEXT_SIZE (VARHDRSZ_EXTERNAL + sizeof(varatt_external))
+#define TOAST_POINTER_EXT_SIZE (VARHDRSZ_EXTERNAL + sizeof(varatt_external) + sizeof(uint8))
 
 /* Size of an EXTERNAL datum that contains an indirection pointer */
 #define INDIRECT_POINTER_SIZE (VARHDRSZ_EXTERNAL + sizeof(varatt_indirect))

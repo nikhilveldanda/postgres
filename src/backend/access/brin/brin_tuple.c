@@ -223,6 +223,7 @@ brin_form_tuple(BrinDesc *brdesc, BlockNumber blkno, BrinMemTuple *tuple,
 			{
 				Datum		cvalue;
 				char		compression;
+				CompressionInfo cmp;
 				Form_pg_attribute att = TupleDescAttr(brdesc->bd_tupdesc,
 													  keyno);
 
@@ -237,7 +238,8 @@ brin_form_tuple(BrinDesc *brdesc, BlockNumber blkno, BrinMemTuple *tuple,
 				else
 					compression = InvalidCompressionMethod;
 
-				cvalue = toast_compress_datum(value, compression);
+				cmp = setup_cmp_info(compression, att);
+				cvalue = toast_compress_datum(value, cmp);
 
 				if (DatumGetPointer(cvalue) != NULL)
 				{

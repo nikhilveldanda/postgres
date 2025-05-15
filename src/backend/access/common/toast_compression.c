@@ -21,6 +21,7 @@
 #include "access/toast_compression.h"
 #include "common/pg_lzcompress.h"
 #include "varatt.h"
+#include "utils/attoptcache.h"
 
 /* GUC */
 int			default_toast_compression = TOAST_PGLZ_COMPRESSION;
@@ -267,7 +268,7 @@ toast_get_compression_id(struct varlena *attr)
 		VARATT_EXTERNAL_GET_POINTER(toast_pointer, attr);
 
 		if (VARATT_EXTERNAL_IS_COMPRESSED(toast_pointer))
-			cmid = VARATT_EXTERNAL_GET_COMPRESS_METHOD(toast_pointer);
+			cmid = VARATT_EXTERNAL_GET_COMPRESS_METHOD(&toast_pointer);
 	}
 	else if (VARATT_IS_COMPRESSED(attr))
 		cmid = VARDATA_COMPRESSED_GET_COMPRESS_METHOD(attr);
@@ -313,4 +314,28 @@ GetCompressionMethodName(char method)
 			elog(ERROR, "invalid compression method %c", method);
 			return NULL;		/* keep compiler quiet */
 	}
+}
+
+CompressionInfo
+setup_cmp_info(char cmethod, Form_pg_attribute att)
+{
+	CompressionInfo info;
+
+	/* initialize from the attribute’s default settings */
+	info.cmethod = cmethod;
+
+	/* If the compression method is not valid, use the current default */
+	if (!CompressionMethodIsValid(cmethod))
+		info.cmethod = default_toast_compression;
+
+	switch (info.cmethod)
+	{
+		case TOAST_PGLZ_COMPRESSION:
+		case TOAST_LZ4_COMPRESSION:
+			break;
+		default:
+			elog(ERROR, "invalid compression method %c", info.cmethod);
+	}
+
+	return info;
 }
