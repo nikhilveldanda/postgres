@@ -28,6 +28,9 @@
  * you need to memcpy from the tuple into a local struct variable before
  * you can look at these fields!  (The reason we use memcmp is to avoid
  * having to do that just to detect equality of two TOAST pointers...)
+ *
+ * When the top two bits of va_extinfo (as checked by VARATT_4BCE_MASK) are set,
+ * it means that va_data begins with an extra byte specifying the compression-method ID.
  */
 typedef struct varatt_external
 {
@@ -36,6 +39,10 @@ typedef struct varatt_external
 								 * compression method */
 	Oid			va_valueid;		/* Unique ID of value within TOAST table */
 	Oid			va_toastrelid;	/* RelID of TOAST table containing it */
+	char		va_data[FLEXIBLE_ARRAY_MEMBER]; /* If an extended compression
+												 * method is in use, include
+												 * one extra byte to store its
+												 * ID */
 }			varatt_external;
 
 /*
@@ -93,11 +100,15 @@ typedef enum vartag_external
 #define VARTAG_IS_EXPANDED(tag) \
 	(((tag) & ~1) == VARTAG_EXPANDED_RO)
 
-#define VARTAG_SIZE(tag) \
-	((tag) == VARTAG_INDIRECT ? sizeof(varatt_indirect) : \
-	 VARTAG_IS_EXPANDED(tag) ? sizeof(varatt_expanded) : \
-	 (tag) == VARTAG_ONDISK ? sizeof(varatt_external) : \
-	 (AssertMacro(false), 0))
+#define VARTAG_SIZE(PTR)																			\
+(																									\
+	(VARTAG_EXTERNAL(PTR) == VARTAG_INDIRECT) ?														\
+		sizeof(varatt_indirect)	: VARTAG_IS_EXPANDED(VARTAG_EXTERNAL(PTR)) ?						\
+		sizeof(varatt_expanded)	: (VARTAG_EXTERNAL(PTR) == VARTAG_ONDISK) ?							\
+		( sizeof(varatt_external) + ( ((UNALIGNED_U32((const uint8 *)(PTR) + VARHDRSZ_EXTERNAL		\
+			+ offsetof(varatt_external, va_extinfo))) >> VARLENA_EXTSIZE_BITS) == VARATT_4BCE_MASK	\
+			? sizeof(uint8)	: 0 ))	: (AssertMacro(false), 0)										\
+)
 
 /*
  * These structs describe the header of a varlena object that may have been
@@ -122,6 +133,14 @@ typedef union
 								 * compression method; see va_extinfo */
 		char		va_data[FLEXIBLE_ARRAY_MEMBER]; /* Compressed data */
 	}			va_compressed;
+	struct
+	{
+		uint32		va_header;
+		uint32		va_tcinfo;	/* Original data size (excludes header) and
+								 * compression method; see va_extinfo */
+		uint8		cmp_alg;	/* algorithm id (0–255) */
+		char		cmp_data[FLEXIBLE_ARRAY_MEMBER];
+	} varatt_cmp_extended;
 } varattrib_4b;
 
 typedef struct
@@ -206,6 +225,12 @@ typedef struct
 	(((varattrib_1b_e *) (PTR))->va_header = 0x80, \
 	 ((varattrib_1b_e *) (PTR))->va_tag = (tag))
 
+#define UNALIGNED_U32(ptr)							\
+	( (uint32) (((const uint8 *)(ptr))[3])			\
+	| ((uint32)(((const uint8 *)(ptr))[2]) <<  8)	\
+	| ((uint32)(((const uint8 *)(ptr))[1]) << 16)	\
+	| ((uint32)(((const uint8 *)(ptr))[0]) << 24) )
+
 #else							/* !WORDS_BIGENDIAN */
 
 #define VARATT_IS_4B(PTR) \
@@ -238,6 +263,12 @@ typedef struct
 #define SET_VARTAG_1B_E(PTR,tag) \
 	(((varattrib_1b_e *) (PTR))->va_header = 0x01, \
 	 ((varattrib_1b_e *) (PTR))->va_tag = (tag))
+
+#define UNALIGNED_U32(ptr)							\
+	( (uint32) (((const uint8 *)(ptr))[0])			\
+	| ((uint32)(((const uint8 *)(ptr))[1]) <<  8)	\
+	| ((uint32)(((const uint8 *)(ptr))[2]) << 16)	\
+	| ((uint32)(((const uint8 *)(ptr))[3]) << 24) )
 
 #endif							/* WORDS_BIGENDIAN */
 
@@ -282,7 +313,7 @@ typedef struct
 #define VARDATA_SHORT(PTR)					VARDATA_1B(PTR)
 
 #define VARTAG_EXTERNAL(PTR)				VARTAG_1B_E(PTR)
-#define VARSIZE_EXTERNAL(PTR)				(VARHDRSZ_EXTERNAL + VARTAG_SIZE(VARTAG_EXTERNAL(PTR)))
+#define VARSIZE_EXTERNAL(PTR)				(VARHDRSZ_EXTERNAL + VARTAG_SIZE(PTR))
 #define VARDATA_EXTERNAL(PTR)				VARDATA_1B_E(PTR)
 
 #define VARATT_IS_COMPRESSED(PTR)			VARATT_IS_4B_C(PTR)
@@ -328,20 +359,31 @@ typedef struct
 #define VARDATA_COMPRESSED_GET_EXTSIZE(PTR) \
 	(((varattrib_4b *) (PTR))->va_compressed.va_tcinfo & VARLENA_EXTSIZE_MASK)
 #define VARDATA_COMPRESSED_GET_COMPRESS_METHOD(PTR) \
-	(((varattrib_4b *) (PTR))->va_compressed.va_tcinfo >> VARLENA_EXTSIZE_BITS)
+	( (VARATT_IS_4BCE(PTR)) ? (VARATT_4BCE_CMP_METHOD(PTR)) \
+	: (((varattrib_4b *) (PTR))->va_compressed.va_tcinfo >> VARLENA_EXTSIZE_BITS))
 
 /* Same for external Datums; but note argument is a struct varatt_external */
-#define VARATT_EXTERNAL_GET_EXTSIZE(toast_pointer) \
-	((toast_pointer).va_extinfo & VARLENA_EXTSIZE_MASK)
-#define VARATT_EXTERNAL_GET_COMPRESS_METHOD(toast_pointer) \
-	((toast_pointer).va_extinfo >> VARLENA_EXTSIZE_BITS)
+#define VARATT_EXTERNAL_GET_EXTSIZE(toast_pointer) 		\
+	((toast_pointer)->va_extinfo & VARLENA_EXTSIZE_MASK)
 
-#define VARATT_EXTERNAL_SET_SIZE_AND_COMPRESS_METHOD(toast_pointer, len, cm) \
-	do { \
-		Assert((cm) == TOAST_PGLZ_COMPRESSION_ID || \
-			   (cm) == TOAST_LZ4_COMPRESSION_ID); \
-		((toast_pointer).va_extinfo = \
-			(len) | ((uint32) (cm) << VARLENA_EXTSIZE_BITS)); \
+#define VARATT_EXTERNAL_GET_COMPRESS_METHOD(toast_pointer)								\
+	(																					\
+		((( (toast_pointer)->va_extinfo >> VARLENA_EXTSIZE_BITS) == VARATT_4BCE_MASK)	\
+		? (uint8)(((const uint8 *)(toast_pointer)->va_data)[0])							\
+		: (uint8)((toast_pointer)->va_extinfo >> VARLENA_EXTSIZE_BITS))					\
+	)
+
+#define VARATT_EXTERNAL_SET_SIZE_AND_COMPRESS_METHOD(toast_pointer, len, cm)							\
+	do { 																								\
+		Assert((cm) == TOAST_PGLZ_COMPRESSION_ID ||														\
+				(cm) == TOAST_LZ4_COMPRESSION_ID);														\
+		if (!TOAST_CMPID_EXTENDED((cm))) {																\
+			((toast_pointer)->va_extinfo = (len) | ((uint32) (cm) << VARLENA_EXTSIZE_BITS));			\
+		}																								\
+		else {																							\
+			(toast_pointer)->va_extinfo = (uint32)(len) | (VARATT_4BCE_MASK << VARLENA_EXTSIZE_BITS);	\
+			((uint8 *)(toast_pointer)->va_data)[0] = (uint8)(cm);										\
+		}																								\
 	} while (0)
 
 /*
@@ -353,6 +395,24 @@ typedef struct
  */
 #define VARATT_EXTERNAL_IS_COMPRESSED(toast_pointer) \
 	(VARATT_EXTERNAL_GET_EXTSIZE(toast_pointer) < \
-	 (toast_pointer).va_rawsize - VARHDRSZ)
+	 (toast_pointer)->va_rawsize - VARHDRSZ)
+
+/*
+ * Detect the extended‐compression flag in va_tcinfo
+ *  (top 2 bits = 0b11 indicate “cmp_ext” path)
+ */
+#define VARATT_4BCE_MASK   0x3
+
+#define VARATT_IS_4BCE(PTR)	\
+	((((varattrib_4b *)(PTR))->varatt_cmp_extended.va_tcinfo >> VARLENA_EXTSIZE_BITS) == VARATT_4BCE_MASK)
+
+#define VARDATA_4BCE(PTR)	\
+	(((varattrib_4b *) (PTR))->varatt_cmp_extended.cmp_data)
+
+/* get the algorithm ID */
+#define VARATT_4BCE_CMP_METHOD(PTR)                          \
+	(((varattrib_4b *) (PTR))->varatt_cmp_extended.cmp_alg)
+
+#define VARHDRSZ_4BCE	(offsetof(varattrib_4b, varatt_cmp_extended.cmp_data))
 
 #endif

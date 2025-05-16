@@ -4972,7 +4972,7 @@ ReorderBufferToastReplace(ReorderBuffer *rb, ReorderBufferTXN *txn,
 		struct varlena *varlena;
 
 		/* va_rawsize is the size of the original datum -- including header */
-		struct varatt_external toast_pointer;
+		struct varatt_external *toast_pointer;
 		struct varatt_indirect redirect_pointer;
 		struct varlena *new_datum = NULL;
 		struct varlena *reconstructed;
@@ -5000,7 +5000,7 @@ ReorderBufferToastReplace(ReorderBuffer *rb, ReorderBufferTXN *txn,
 		/* no need to do anything if the tuple isn't external */
 		if (!VARATT_IS_EXTERNAL(varlena))
 			continue;
-
+		toast_pointer = palloc(VARSIZE_EXTERNAL(varlena) - VARHDRSZ_EXTERNAL);
 		VARATT_EXTERNAL_GET_POINTER(toast_pointer, varlena);
 
 		/*
@@ -5008,7 +5008,7 @@ ReorderBufferToastReplace(ReorderBuffer *rb, ReorderBufferTXN *txn,
 		 */
 		ent = (ReorderBufferToastEnt *)
 			hash_search(txn->toast_hash,
-						&toast_pointer.va_valueid,
+						&toast_pointer->va_valueid,
 						HASH_FIND,
 						NULL);
 		if (ent == NULL)
@@ -5019,7 +5019,7 @@ ReorderBufferToastReplace(ReorderBuffer *rb, ReorderBufferTXN *txn,
 
 		free[natt] = true;
 
-		reconstructed = palloc0(toast_pointer.va_rawsize);
+		reconstructed = palloc0(toast_pointer->va_rawsize);
 
 		ent->reconstructed = reconstructed;
 

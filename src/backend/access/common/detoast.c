@@ -60,7 +60,7 @@ detoast_external_attr(struct varlena *attr)
 		 */
 		struct varatt_indirect redirect;
 
-		VARATT_EXTERNAL_GET_POINTER(redirect, attr);
+		VARATT_EXTERNAL_GET_POINTER(&redirect, attr);
 		attr = (struct varlena *) redirect.pointer;
 
 		/* nested indirect Datums aren't allowed */
@@ -137,7 +137,7 @@ detoast_attr(struct varlena *attr)
 		 */
 		struct varatt_indirect redirect;
 
-		VARATT_EXTERNAL_GET_POINTER(redirect, attr);
+		VARATT_EXTERNAL_GET_POINTER(&redirect, attr);
 		attr = (struct varlena *) redirect.pointer;
 
 		/* nested indirect Datums aren't allowed */
@@ -225,8 +225,9 @@ detoast_attr_slice(struct varlena *attr,
 
 	if (VARATT_IS_EXTERNAL_ONDISK(attr))
 	{
-		struct varatt_external toast_pointer;
+		struct varatt_external *toast_pointer;
 
+		toast_pointer = palloc(VARSIZE_EXTERNAL(attr) - VARHDRSZ_EXTERNAL);
 		VARATT_EXTERNAL_GET_POINTER(toast_pointer, attr);
 
 		/* fast path for non-compressed external datums */
@@ -268,7 +269,7 @@ detoast_attr_slice(struct varlena *attr,
 	{
 		struct varatt_indirect redirect;
 
-		VARATT_EXTERNAL_GET_POINTER(redirect, attr);
+		VARATT_EXTERNAL_GET_POINTER(&redirect, attr);
 
 		/* nested indirect Datums aren't allowed */
 		Assert(!VARATT_IS_EXTERNAL_INDIRECT(redirect.pointer));
@@ -344,13 +345,14 @@ toast_fetch_datum(struct varlena *attr)
 {
 	Relation	toastrel;
 	struct varlena *result;
-	struct varatt_external toast_pointer;
+	struct varatt_external *toast_pointer;
 	int32		attrsize;
 
 	if (!VARATT_IS_EXTERNAL_ONDISK(attr))
 		elog(ERROR, "toast_fetch_datum shouldn't be called for non-ondisk datums");
 
 	/* Must copy to access aligned fields */
+	toast_pointer = palloc(VARSIZE_EXTERNAL(attr) - VARHDRSZ_EXTERNAL);
 	VARATT_EXTERNAL_GET_POINTER(toast_pointer, attr);
 
 	attrsize = VARATT_EXTERNAL_GET_EXTSIZE(toast_pointer);
@@ -369,10 +371,10 @@ toast_fetch_datum(struct varlena *attr)
 	/*
 	 * Open the toast relation and its indexes
 	 */
-	toastrel = table_open(toast_pointer.va_toastrelid, AccessShareLock);
+	toastrel = table_open(toast_pointer->va_toastrelid, AccessShareLock);
 
 	/* Fetch all chunks */
-	table_relation_fetch_toast_slice(toastrel, toast_pointer.va_valueid,
+	table_relation_fetch_toast_slice(toastrel, toast_pointer->va_valueid,
 									 attrsize, 0, attrsize, result);
 
 	/* Close toast table */
@@ -398,13 +400,14 @@ toast_fetch_datum_slice(struct varlena *attr, int32 sliceoffset,
 {
 	Relation	toastrel;
 	struct varlena *result;
-	struct varatt_external toast_pointer;
+	struct varatt_external *toast_pointer;
 	int32		attrsize;
 
 	if (!VARATT_IS_EXTERNAL_ONDISK(attr))
 		elog(ERROR, "toast_fetch_datum_slice shouldn't be called for non-ondisk datums");
 
 	/* Must copy to access aligned fields */
+	toast_pointer = palloc(VARSIZE_EXTERNAL(attr) - VARHDRSZ_EXTERNAL);
 	VARATT_EXTERNAL_GET_POINTER(toast_pointer, attr);
 
 	/*
@@ -449,10 +452,10 @@ toast_fetch_datum_slice(struct varlena *attr, int32 sliceoffset,
 		return result;			/* Can save a lot of work at this point! */
 
 	/* Open the toast relation */
-	toastrel = table_open(toast_pointer.va_toastrelid, AccessShareLock);
+	toastrel = table_open(toast_pointer->va_toastrelid, AccessShareLock);
 
 	/* Fetch all chunks */
-	table_relation_fetch_toast_slice(toastrel, toast_pointer.va_valueid,
+	table_relation_fetch_toast_slice(toastrel, toast_pointer->va_valueid,
 									 attrsize, sliceoffset, slicelength,
 									 result);
 
@@ -478,7 +481,7 @@ toast_decompress_datum(struct varlena *attr)
 	 * Fetch the compression method id stored in the compression header and
 	 * decompress the data using the appropriate decompression routine.
 	 */
-	cmid = TOAST_COMPRESS_METHOD(attr);
+	cmid = VARDATA_COMPRESSED_GET_COMPRESS_METHOD(attr);
 	switch (cmid)
 	{
 		case TOAST_PGLZ_COMPRESSION_ID:
@@ -514,14 +517,14 @@ toast_decompress_datum_slice(struct varlena *attr, int32 slicelength)
 	 * have been seen to give wrong results if passed an output size that is
 	 * more than the data's true decompressed size.
 	 */
-	if ((uint32) slicelength >= TOAST_COMPRESS_EXTSIZE(attr))
+	if ((uint32) slicelength >= VARDATA_COMPRESSED_GET_EXTSIZE(attr))
 		return toast_decompress_datum(attr);
 
 	/*
 	 * Fetch the compression method id stored in the compression header and
 	 * decompress the data slice using the appropriate decompression routine.
 	 */
-	cmid = TOAST_COMPRESS_METHOD(attr);
+	cmid = VARDATA_COMPRESSED_GET_COMPRESS_METHOD(attr);
 	switch (cmid)
 	{
 		case TOAST_PGLZ_COMPRESSION_ID:
@@ -550,21 +553,22 @@ toast_raw_datum_size(Datum value)
 	if (VARATT_IS_EXTERNAL_ONDISK(attr))
 	{
 		/* va_rawsize is the size of the original datum -- including header */
-		struct varatt_external toast_pointer;
+		struct varatt_external *toast_pointer;
 
+		toast_pointer = palloc(VARSIZE_EXTERNAL(attr) - VARHDRSZ_EXTERNAL);
 		VARATT_EXTERNAL_GET_POINTER(toast_pointer, attr);
-		result = toast_pointer.va_rawsize;
+		result = toast_pointer->va_rawsize;
 	}
 	else if (VARATT_IS_EXTERNAL_INDIRECT(attr))
 	{
-		struct varatt_indirect toast_pointer;
+		struct varatt_indirect redirect;
 
-		VARATT_EXTERNAL_GET_POINTER(toast_pointer, attr);
+		VARATT_EXTERNAL_GET_POINTER(&redirect, attr);
 
 		/* nested indirect Datums aren't allowed */
-		Assert(!VARATT_IS_EXTERNAL_INDIRECT(toast_pointer.pointer));
+		Assert(!VARATT_IS_EXTERNAL_INDIRECT(redirect.pointer));
 
-		return toast_raw_datum_size(PointerGetDatum(toast_pointer.pointer));
+		return toast_raw_datum_size(PointerGetDatum(redirect.pointer));
 	}
 	else if (VARATT_IS_EXTERNAL_EXPANDED(attr))
 	{
@@ -610,21 +614,22 @@ toast_datum_size(Datum value)
 		 * compressed or not.  We do not count the size of the toast pointer
 		 * ... should we?
 		 */
-		struct varatt_external toast_pointer;
+		struct varatt_external *toast_pointer;
 
+		toast_pointer = palloc(VARSIZE_EXTERNAL(attr) - VARHDRSZ_EXTERNAL);
 		VARATT_EXTERNAL_GET_POINTER(toast_pointer, attr);
 		result = VARATT_EXTERNAL_GET_EXTSIZE(toast_pointer);
 	}
 	else if (VARATT_IS_EXTERNAL_INDIRECT(attr))
 	{
-		struct varatt_indirect toast_pointer;
+		struct varatt_indirect redirect;
 
-		VARATT_EXTERNAL_GET_POINTER(toast_pointer, attr);
+		VARATT_EXTERNAL_GET_POINTER(&redirect, attr);
 
 		/* nested indirect Datums aren't allowed */
 		Assert(!VARATT_IS_EXTERNAL_INDIRECT(attr));
 
-		return toast_datum_size(PointerGetDatum(toast_pointer.pointer));
+		return toast_datum_size(PointerGetDatum(redirect.pointer));
 	}
 	else if (VARATT_IS_EXTERNAL_EXPANDED(attr))
 	{

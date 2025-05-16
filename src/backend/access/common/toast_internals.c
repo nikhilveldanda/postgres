@@ -43,7 +43,7 @@ static bool toastid_valueid_exists(Oid toastrelid, Oid valueid);
  * ----------
  */
 Datum
-toast_compress_datum(Datum value, char cmethod)
+toast_compress_datum(Datum value, CompressionInfo cmp)
 {
 	struct varlena *tmp = NULL;
 	int32		valsize;
@@ -54,14 +54,10 @@ toast_compress_datum(Datum value, char cmethod)
 
 	valsize = VARSIZE_ANY_EXHDR(DatumGetPointer(value));
 
-	/* If the compression method is not valid, use the current default */
-	if (!CompressionMethodIsValid(cmethod))
-		cmethod = default_toast_compression;
-
 	/*
 	 * Call appropriate compression routine for the compression method.
 	 */
-	switch (cmethod)
+	switch (cmp.cmethod)
 	{
 		case TOAST_PGLZ_COMPRESSION:
 			tmp = pglz_compress_datum((const struct varlena *) value);
@@ -72,7 +68,7 @@ toast_compress_datum(Datum value, char cmethod)
 			cmid = TOAST_LZ4_COMPRESSION_ID;
 			break;
 		default:
-			elog(ERROR, "invalid compression method %c", cmethod);
+			elog(ERROR, "invalid compression method %c", cmp.cmethod);
 	}
 
 	if (tmp == NULL)
@@ -127,7 +123,7 @@ toast_save_datum(Relation rel, Datum value,
 	bool		t_isnull[3];
 	CommandId	mycid = GetCurrentCommandId(true);
 	struct varlena *result;
-	struct varatt_external toast_pointer;
+	struct varatt_external *toast_pointer;
 	union
 	{
 		struct varlena hdr;
@@ -143,6 +139,20 @@ toast_save_datum(Relation rel, Datum value,
 	Pointer		dval = DatumGetPointer(value);
 	int			num_indexes;
 	int			validIndex;
+	ToastCompressionId cmid = TOAST_INVALID_COMPRESSION_ID;
+	int32		toast_pointer_size = 0;
+
+	if (VARATT_IS_COMPRESSED(dval))
+	{
+		cmid = VARDATA_COMPRESSED_GET_COMPRESS_METHOD(dval);
+		toast_pointer_size = TOAST_CMPID_EXTENDED(cmid) ? TOAST_POINTER_EXT_SIZE - VARHDRSZ_EXTERNAL : TOAST_POINTER_NOEXT_SIZE - VARHDRSZ_EXTERNAL;
+		toast_pointer = palloc(toast_pointer_size);
+	}
+	else
+	{
+		toast_pointer_size = TOAST_POINTER_NOEXT_SIZE - VARHDRSZ_EXTERNAL;
+		toast_pointer = palloc(toast_pointer_size);
+	}
 
 	Assert(!VARATT_IS_EXTERNAL(value));
 
@@ -174,19 +184,18 @@ toast_save_datum(Relation rel, Datum value,
 	{
 		data_p = VARDATA_SHORT(dval);
 		data_todo = VARSIZE_SHORT(dval) - VARHDRSZ_SHORT;
-		toast_pointer.va_rawsize = data_todo + VARHDRSZ;	/* as if not short */
-		toast_pointer.va_extinfo = data_todo;
+		toast_pointer->va_rawsize = data_todo + VARHDRSZ;	/* as if not short */
+		toast_pointer->va_extinfo = data_todo;
 	}
 	else if (VARATT_IS_COMPRESSED(dval))
 	{
 		data_p = VARDATA(dval);
 		data_todo = VARSIZE(dval) - VARHDRSZ;
 		/* rawsize in a compressed datum is just the size of the payload */
-		toast_pointer.va_rawsize = VARDATA_COMPRESSED_GET_EXTSIZE(dval) + VARHDRSZ;
+		toast_pointer->va_rawsize = VARDATA_COMPRESSED_GET_EXTSIZE(dval) + VARHDRSZ;
 
 		/* set external size and compression method */
-		VARATT_EXTERNAL_SET_SIZE_AND_COMPRESS_METHOD(toast_pointer, data_todo,
-													 VARDATA_COMPRESSED_GET_COMPRESS_METHOD(dval));
+		VARATT_EXTERNAL_SET_SIZE_AND_COMPRESS_METHOD(toast_pointer, data_todo, cmid);
 		/* Assert that the numbers look like it's compressed */
 		Assert(VARATT_EXTERNAL_IS_COMPRESSED(toast_pointer));
 	}
@@ -194,8 +203,8 @@ toast_save_datum(Relation rel, Datum value,
 	{
 		data_p = VARDATA(dval);
 		data_todo = VARSIZE(dval) - VARHDRSZ;
-		toast_pointer.va_rawsize = VARSIZE(dval);
-		toast_pointer.va_extinfo = data_todo;
+		toast_pointer->va_rawsize = VARSIZE(dval);
+		toast_pointer->va_extinfo = data_todo;
 	}
 
 	/*
@@ -207,9 +216,9 @@ toast_save_datum(Relation rel, Datum value,
 	 * if we have to substitute such an OID.
 	 */
 	if (OidIsValid(rel->rd_toastoid))
-		toast_pointer.va_toastrelid = rel->rd_toastoid;
+		toast_pointer->va_toastrelid = rel->rd_toastoid;
 	else
-		toast_pointer.va_toastrelid = RelationGetRelid(toastrel);
+		toast_pointer->va_toastrelid = RelationGetRelid(toastrel);
 
 	/*
 	 * Choose an OID to use as the value ID for this toast value.
@@ -226,7 +235,7 @@ toast_save_datum(Relation rel, Datum value,
 	if (!OidIsValid(rel->rd_toastoid))
 	{
 		/* normal case: just choose an unused OID */
-		toast_pointer.va_valueid =
+		toast_pointer->va_valueid =
 			GetNewOidWithIndex(toastrel,
 							   RelationGetRelid(toastidxs[validIndex]),
 							   (AttrNumber) 1);
@@ -234,18 +243,19 @@ toast_save_datum(Relation rel, Datum value,
 	else
 	{
 		/* rewrite case: check to see if value was in old toast table */
-		toast_pointer.va_valueid = InvalidOid;
+		toast_pointer->va_valueid = InvalidOid;
 		if (oldexternal != NULL)
 		{
-			struct varatt_external old_toast_pointer;
+			struct varatt_external *old_toast_pointer;
 
 			Assert(VARATT_IS_EXTERNAL_ONDISK(oldexternal));
 			/* Must copy to access aligned fields */
+			old_toast_pointer = palloc(VARSIZE_EXTERNAL(oldexternal) - VARHDRSZ_EXTERNAL);
 			VARATT_EXTERNAL_GET_POINTER(old_toast_pointer, oldexternal);
-			if (old_toast_pointer.va_toastrelid == rel->rd_toastoid)
+			if (old_toast_pointer->va_toastrelid == rel->rd_toastoid)
 			{
 				/* This value came from the old toast table; reuse its OID */
-				toast_pointer.va_valueid = old_toast_pointer.va_valueid;
+				toast_pointer->va_valueid = old_toast_pointer->va_valueid;
 
 				/*
 				 * There is a corner case here: the table rewrite might have
@@ -265,14 +275,14 @@ toast_save_datum(Relation rel, Datum value,
 				 * be reclaimed by VACUUM.
 				 */
 				if (toastrel_valueid_exists(toastrel,
-											toast_pointer.va_valueid))
+											toast_pointer->va_valueid))
 				{
 					/* Match, so short-circuit the data storage loop below */
 					data_todo = 0;
 				}
 			}
 		}
-		if (toast_pointer.va_valueid == InvalidOid)
+		if (toast_pointer->va_valueid == InvalidOid)
 		{
 			/*
 			 * new value; must choose an OID that doesn't conflict in either
@@ -280,19 +290,19 @@ toast_save_datum(Relation rel, Datum value,
 			 */
 			do
 			{
-				toast_pointer.va_valueid =
+				toast_pointer->va_valueid =
 					GetNewOidWithIndex(toastrel,
 									   RelationGetRelid(toastidxs[validIndex]),
 									   (AttrNumber) 1);
 			} while (toastid_valueid_exists(rel->rd_toastoid,
-											toast_pointer.va_valueid));
+											toast_pointer->va_valueid));
 		}
 	}
 
 	/*
 	 * Initialize constant parts of the tuple data
 	 */
-	t_values[0] = ObjectIdGetDatum(toast_pointer.va_valueid);
+	t_values[0] = ObjectIdGetDatum(toast_pointer->va_valueid);
 	t_values[2] = PointerGetDatum(&chunk_data);
 	t_isnull[0] = false;
 	t_isnull[1] = false;
@@ -368,9 +378,9 @@ toast_save_datum(Relation rel, Datum value,
 	/*
 	 * Create the TOAST pointer value that we'll return
 	 */
-	result = (struct varlena *) palloc(TOAST_POINTER_SIZE);
+	result = (struct varlena *) palloc(toast_pointer_size + VARHDRSZ_EXTERNAL);
 	SET_VARTAG_EXTERNAL(result, VARTAG_ONDISK);
-	memcpy(VARDATA_EXTERNAL(result), &toast_pointer, sizeof(toast_pointer));
+	memcpy(VARDATA_EXTERNAL(result), toast_pointer, toast_pointer_size);
 
 	return PointerGetDatum(result);
 }
@@ -385,7 +395,7 @@ void
 toast_delete_datum(Relation rel, Datum value, bool is_speculative)
 {
 	struct varlena *attr = (struct varlena *) DatumGetPointer(value);
-	struct varatt_external toast_pointer;
+	struct varatt_external *toast_pointer;
 	Relation	toastrel;
 	Relation   *toastidxs;
 	ScanKeyData toastkey;
@@ -398,12 +408,13 @@ toast_delete_datum(Relation rel, Datum value, bool is_speculative)
 		return;
 
 	/* Must copy to access aligned fields */
+	toast_pointer = palloc(VARSIZE_EXTERNAL(attr) - VARHDRSZ_EXTERNAL);
 	VARATT_EXTERNAL_GET_POINTER(toast_pointer, attr);
 
 	/*
 	 * Open the toast relation and its indexes
 	 */
-	toastrel = table_open(toast_pointer.va_toastrelid, RowExclusiveLock);
+	toastrel = table_open(toast_pointer->va_toastrelid, RowExclusiveLock);
 
 	/* Fetch valid relation used for process */
 	validIndex = toast_open_indexes(toastrel,
@@ -417,7 +428,7 @@ toast_delete_datum(Relation rel, Datum value, bool is_speculative)
 	ScanKeyInit(&toastkey,
 				(AttrNumber) 1,
 				BTEqualStrategyNumber, F_OIDEQ,
-				ObjectIdGetDatum(toast_pointer.va_valueid));
+				ObjectIdGetDatum(toast_pointer->va_valueid));
 
 	/*
 	 * Find all the chunks.  (We don't actually care whether we see them in

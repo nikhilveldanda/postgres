@@ -31,21 +31,26 @@ typedef struct toast_compress_header
  * Utilities for manipulation of header information for compressed
  * toast entries.
  */
-#define TOAST_COMPRESS_EXTSIZE(ptr) \
-	(((toast_compress_header *) (ptr))->tcinfo & VARLENA_EXTSIZE_MASK)
-#define TOAST_COMPRESS_METHOD(ptr) \
-	(((toast_compress_header *) (ptr))->tcinfo >> VARLENA_EXTSIZE_BITS)
-
-#define TOAST_COMPRESS_SET_SIZE_AND_COMPRESS_METHOD(ptr, len, cm_method) \
-	do { \
-		Assert((len) > 0 && (len) <= VARLENA_EXTSIZE_MASK); \
-		Assert((cm_method) == TOAST_PGLZ_COMPRESSION_ID || \
-			   (cm_method) == TOAST_LZ4_COMPRESSION_ID); \
-		((toast_compress_header *) (ptr))->tcinfo = \
-			(len) | ((uint32) (cm_method) << VARLENA_EXTSIZE_BITS); \
+#define TOAST_COMPRESS_SET_SIZE_AND_COMPRESS_METHOD(ptr, len, cm_method)				\
+	do {																				\
+		Assert((len) > 0 && (len) <= VARLENA_EXTSIZE_MASK);								\
+		Assert((cm_method) == TOAST_PGLZ_COMPRESSION_ID ||								\
+				(cm_method) == TOAST_LZ4_COMPRESSION_ID);								\
+		if (!TOAST_CMPID_EXTENDED((cm_method)))											\
+		{																				\
+			((toast_compress_header *)(ptr))->tcinfo =									\
+				((uint32)(len)) | ((uint32)(cm_method) << VARLENA_EXTSIZE_BITS);		\
+		}																				\
+		else																			\
+		{																				\
+			/* extended path: mark EXT flag in tcinfo */								\
+			((toast_compress_header *)(ptr))->tcinfo =									\
+				((uint32)(len)) | ((uint32)(VARATT_4BCE_MASK) << VARLENA_EXTSIZE_BITS);	\
+			VARATT_4BCE_CMP_METHOD(ptr) = (cm_method);									\
+		}																				\
 	} while (0)
 
-extern Datum toast_compress_datum(Datum value, char cmethod);
+extern Datum toast_compress_datum(Datum value, CompressionInfo cmp);
 extern Oid	toast_get_valid_index(Oid toastoid, LOCKMODE lock);
 
 extern void toast_delete_datum(Relation rel, Datum value, bool is_speculative);
