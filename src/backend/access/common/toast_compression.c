@@ -17,6 +17,10 @@
 #include <lz4.h>
 #endif
 
+#ifdef USE_ZSTD
+#include <zstd.h>
+#endif
+
 #include "access/detoast.h"
 #include "access/toast_compression.h"
 #include "common/pg_lzcompress.h"
@@ -26,11 +30,19 @@
 /* GUC */
 int			default_toast_compression = TOAST_PGLZ_COMPRESSION;
 
-#define NO_LZ4_SUPPORT() \
+#ifdef USE_ZSTD
+#define ZSTD_CHECK_ERROR(zstd_ret, msg) \
+	do { \
+		if (ZSTD_isError(zstd_ret)) \
+			ereport(ERROR, (errmsg("%s: %s", (msg), ZSTD_getErrorName(zstd_ret)))); \
+	} while (0)
+#endif
+
+#define COMPRESSION_METHOD_NOT_SUPPORTED(method) \
 	ereport(ERROR, \
 			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED), \
-			 errmsg("compression method lz4 not supported"), \
-			 errdetail("This functionality requires the server to be built with lz4 support.")))
+			 errmsg("compression method %s not supported", method), \
+			 errdetail("This functionality requires the server to be built with %s support.", method)))
 
 /*
  * Compress a varlena using PGLZ.
@@ -140,7 +152,7 @@ struct varlena *
 lz4_compress_datum(const struct varlena *value)
 {
 #ifndef USE_LZ4
-	NO_LZ4_SUPPORT();
+	COMPRESSION_METHOD_NOT_SUPPORTED("lz4");
 	return NULL;				/* keep compiler quiet */
 #else
 	int32		valsize;
@@ -183,7 +195,7 @@ struct varlena *
 lz4_decompress_datum(const struct varlena *value)
 {
 #ifndef USE_LZ4
-	NO_LZ4_SUPPORT();
+	COMPRESSION_METHOD_NOT_SUPPORTED("lz4");
 	return NULL;				/* keep compiler quiet */
 #else
 	int32		rawsize;
@@ -216,7 +228,7 @@ struct varlena *
 lz4_decompress_datum_slice(const struct varlena *value, int32 slicelength)
 {
 #ifndef USE_LZ4
-	NO_LZ4_SUPPORT();
+	COMPRESSION_METHOD_NOT_SUPPORTED("lz4");
 	return NULL;				/* keep compiler quiet */
 #else
 	int32		rawsize;
@@ -243,6 +255,153 @@ lz4_decompress_datum_slice(const struct varlena *value, int32 slicelength)
 	SET_VARSIZE(result, rawsize + VARHDRSZ);
 
 	return result;
+#endif
+}
+
+/* Compress datum using ZSTD */
+struct varlena *
+zstd_compress_datum(const struct varlena *value, CompressionInfo cmp)
+{
+#ifdef USE_ZSTD
+	uint32		valsize = VARSIZE_ANY_EXHDR(value);
+	size_t		max_size = ZSTD_compressBound(valsize);
+	struct varlena *compressed;
+	size_t		cmp_size;
+
+	if (!cmp.meta)				/* ZSTD no dictionary */
+	{
+		/* Allocate space for the compressed varlena (header + data) */
+		compressed = (struct varlena *) palloc(max_size + VARHDRSZ_4BCE);
+
+		cmp_size = ZSTD_compress(VARDATA_4BCE(compressed),
+								 max_size,
+								 VARDATA_ANY(value),
+								 valsize,
+								 cmp.zstd_level);
+
+		if (ZSTD_isError(cmp_size))
+		{
+			pfree(compressed);
+			ZSTD_CHECK_ERROR(cmp_size, "ZSTD compression failed");
+		}
+
+		/*
+		 * If compression did not reduce size, return NULL so that the
+		 * uncompressed data is stored
+		 */
+		if (cmp_size > valsize)
+		{
+			pfree(compressed);
+			return NULL;
+		}
+
+		/* Set the compressed size in the varlena header */
+		SET_VARSIZE_COMPRESSED(compressed, cmp_size + VARHDRSZ_4BCE);
+	}
+	else
+		elog(ERROR, "ZSTD metadata(dictionary) based compression not supported yet");
+
+	return compressed;
+
+#else
+	COMPRESSION_METHOD_NOT_SUPPORTED("zstd");
+	return NULL;
+#endif
+}
+
+/* Decompression routine */
+struct varlena *
+zstd_decompress_datum(const struct varlena *value)
+{
+#ifdef USE_ZSTD
+	/* ZSTD no dictionary compression */
+	uint32		actual_size_exhdr = VARDATA_COMPRESSED_GET_EXTSIZE(value);
+	uint32		zstd_compressed_len;
+	struct varlena *result;
+	size_t		uncmp_size;
+	bool		meta = VARATT_4BCE_PTR_HAS_META(value);
+
+	if (!meta)					/* ZSTD no dictionary */
+	{
+		zstd_compressed_len = VARSIZE_ANY(value) - VARHDRSZ_4BCE;
+
+		/* Allocate space for the uncompressed data */
+		result = (struct varlena *) palloc(actual_size_exhdr + VARHDRSZ);
+
+		uncmp_size = ZSTD_decompress(VARDATA(result),
+									 actual_size_exhdr,
+									 VARDATA_4BCE(value),
+									 zstd_compressed_len);
+
+		if (ZSTD_isError(uncmp_size))
+		{
+			pfree(result);
+			ZSTD_CHECK_ERROR(uncmp_size, "ZSTD decompression failed");
+		}
+
+		/* Set final size in the varlena header */
+		SET_VARSIZE(result, uncmp_size + VARHDRSZ);
+	}
+	else
+		elog(ERROR, "ZSTD metadata(dictionary) based decompression not supported yet");
+
+	return result;
+
+#else
+	COMPRESSION_METHOD_NOT_SUPPORTED("zstd");
+	return NULL;
+#endif
+}
+
+/* Decompress a slice of the datum */
+struct varlena *
+zstd_decompress_datum_slice(const struct varlena *value, int32 slicelength)
+{
+#ifdef USE_ZSTD
+	/* ZSTD no dictionary compression */
+
+	struct varlena *result;
+	ZSTD_inBuffer inBuf;
+	ZSTD_outBuffer outBuf;
+	size_t		ret;
+	ZSTD_DCtx  *ZstdDecompressionCtx;
+	bool		meta = VARATT_4BCE_PTR_HAS_META(value);
+
+	if (!meta)					/* ZSTD no dictionary */
+	{
+		ZstdDecompressionCtx = ZSTD_createDCtx();
+		inBuf.src = VARDATA_4BCE(value);
+		inBuf.size = VARSIZE_ANY(value) - VARHDRSZ_4BCE;
+		inBuf.pos = 0;
+
+		result = (struct varlena *) palloc(slicelength + VARHDRSZ);
+		outBuf.dst = (char *) result + VARHDRSZ;
+		outBuf.size = slicelength;
+		outBuf.pos = 0;
+
+		/* Common decompression loop */
+		while (inBuf.pos < inBuf.size && outBuf.pos < outBuf.size)
+		{
+			ret = ZSTD_decompressStream(ZstdDecompressionCtx, &outBuf, &inBuf);
+			if (ZSTD_isError(ret))
+			{
+				pfree(result);
+				ZSTD_freeDCtx(ZstdDecompressionCtx);
+				ZSTD_CHECK_ERROR(ret, "zstd decompression failed");
+			}
+		}
+
+		Assert(outBuf.size == slicelength && outBuf.pos == slicelength);
+		SET_VARSIZE(result, outBuf.pos + VARHDRSZ);
+		ZSTD_freeDCtx(ZstdDecompressionCtx);
+	}
+	else
+		elog(ERROR, "ZSTD metadata(dictionary) based decompression not supported yet");
+
+	return result;
+#else
+	COMPRESSION_METHOD_NOT_SUPPORTED("zstd");
+	return NULL;
 #endif
 }
 
@@ -290,9 +449,16 @@ CompressionNameToMethod(const char *compression)
 	else if (strcmp(compression, "lz4") == 0)
 	{
 #ifndef USE_LZ4
-		NO_LZ4_SUPPORT();
+		COMPRESSION_METHOD_NOT_SUPPORTED("lz4");
 #endif
 		return TOAST_LZ4_COMPRESSION;
+	}
+	else if (strcmp(compression, "zstd") == 0)
+	{
+#ifndef USE_ZSTD
+		COMPRESSION_METHOD_NOT_SUPPORTED("zstd");
+#endif
+		return TOAST_ZSTD_COMPRESSION;
 	}
 
 	return InvalidCompressionMethod;
@@ -310,6 +476,8 @@ GetCompressionMethodName(char method)
 			return "pglz";
 		case TOAST_LZ4_COMPRESSION:
 			return "lz4";
+		case TOAST_ZSTD_COMPRESSION:
+			return "zstd";
 		default:
 			elog(ERROR, "invalid compression method %c", method);
 			return NULL;		/* keep compiler quiet */
@@ -324,6 +492,7 @@ setup_cmp_info(char cmethod, Form_pg_attribute att)
 	/* initialize from the attribute’s default settings */
 	info.cmethod = cmethod;
 	info.meta = false;
+	info.zstd_level = DEFAULT_ZSTD_LEVEL;
 
 	/* If the compression method is not valid, use the current default */
 	if (!CompressionMethodIsValid(cmethod))
@@ -333,6 +502,14 @@ setup_cmp_info(char cmethod, Form_pg_attribute att)
 	{
 		case TOAST_PGLZ_COMPRESSION:
 		case TOAST_LZ4_COMPRESSION:
+			break;
+		case TOAST_ZSTD_COMPRESSION:
+			{
+				AttributeOpts *aopt = get_attribute_options(att->attrelid, att->attnum);
+
+				if (aopt != NULL)
+					info.zstd_level = aopt->zstd_level;
+			}
 			break;
 		default:
 			elog(ERROR, "invalid compression method %c", info.cmethod);

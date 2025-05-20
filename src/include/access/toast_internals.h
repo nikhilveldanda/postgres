@@ -25,7 +25,8 @@
 	do {																				\
 		Assert((len) > 0 && (len) <= VARLENA_EXTSIZE_MASK);								\
 		Assert((cm_method) == TOAST_PGLZ_COMPRESSION_ID ||								\
-				(cm_method) == TOAST_LZ4_COMPRESSION_ID);								\
+				(cm_method) == TOAST_LZ4_COMPRESSION_ID	||								\
+				(cm_method) == TOAST_ZSTD_COMPRESSION_ID);								\
 		if (!TOAST_CMPID_EXTENDED((cm_method)))											\
 		{																				\
 			((varattrib_4b *)(ptr))->va_compressed.va_tcinfo =							\
