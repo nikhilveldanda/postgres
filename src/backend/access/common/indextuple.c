@@ -123,9 +123,10 @@ index_form_tuple_context(TupleDesc tupleDescriptor,
 			 att->attstorage == TYPSTORAGE_MAIN))
 		{
 			Datum		cvalue;
+			CompressionInfo cmp;
 
-			cvalue = toast_compress_datum(untoasted_values[i],
-										  att->attcompression);
+			cmp = setup_cmp_info(att->attcompression, att);
+			cvalue = toast_compress_datum(untoasted_values[i], cmp);
 
 			if (DatumGetPointer(cvalue) != NULL)
 			{

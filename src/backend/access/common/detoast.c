@@ -478,7 +478,7 @@ toast_decompress_datum(struct varlena *attr)
 	 * Fetch the compression method id stored in the compression header and
 	 * decompress the data using the appropriate decompression routine.
 	 */
-	cmid = TOAST_COMPRESS_METHOD(attr);
+	cmid = VARDATA_COMPRESSED_GET_COMPRESS_METHOD(attr);
 	switch (cmid)
 	{
 		case TOAST_PGLZ_COMPRESSION_ID:
@@ -514,14 +514,14 @@ toast_decompress_datum_slice(struct varlena *attr, int32 slicelength)
 	 * have been seen to give wrong results if passed an output size that is
 	 * more than the data's true decompressed size.
 	 */
-	if ((uint32) slicelength >= TOAST_COMPRESS_EXTSIZE(attr))
+	if ((uint32) slicelength >= VARDATA_COMPRESSED_GET_EXTSIZE(attr))
 		return toast_decompress_datum(attr);
 
 	/*
 	 * Fetch the compression method id stored in the compression header and
 	 * decompress the data slice using the appropriate decompression routine.
 	 */
-	cmid = TOAST_COMPRESS_METHOD(attr);
+	cmid = VARDATA_COMPRESSED_GET_COMPRESS_METHOD(attr);
 	switch (cmid)
 	{
 		case TOAST_PGLZ_COMPRESSION_ID:

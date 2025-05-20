@@ -171,7 +171,7 @@ toast_tuple_init(ToastTupleContext *ttc)
  * The column must have attstorage EXTERNAL or EXTENDED if check_main is
  * false, and must have attstorage MAIN if check_main is true.
  *
- * The column must have a minimum size of MAXALIGN(TOAST_POINTER_SIZE);
+ * The column must have a minimum size of MAXALIGN(TOAST_POINTER_NOEXT_SIZE);
  * if not, no benefit is to be expected by compressing it.
  *
  * The return value is the index of the biggest suitable column, or
@@ -184,7 +184,7 @@ toast_tuple_find_biggest_attribute(ToastTupleContext *ttc,
 	TupleDesc	tupleDesc = ttc->ttc_rel->rd_att;
 	int			numAttrs = tupleDesc->natts;
 	int			biggest_attno = -1;
-	int32		biggest_size = MAXALIGN(TOAST_POINTER_SIZE);
+	int32		biggest_size = MAXALIGN(TOAST_POINTER_NOEXT_SIZE);
 	int32		skip_colflags = TOASTCOL_IGNORE;
 	int			i;
 
@@ -229,8 +229,10 @@ toast_tuple_try_compression(ToastTupleContext *ttc, int attribute)
 	Datum	   *value = &ttc->ttc_values[attribute];
 	Datum		new_value;
 	ToastAttrInfo *attr = &ttc->ttc_attr[attribute];
+	Form_pg_attribute att = TupleDescAttr(ttc->ttc_rel->rd_att, attribute);
+	CompressionInfo cmp = setup_cmp_info(attr->tai_compression, att);
 
-	new_value = toast_compress_datum(*value, attr->tai_compression);
+	new_value = toast_compress_datum(*value, cmp);
 
 	if (DatumGetPointer(new_value) != NULL)
 	{
