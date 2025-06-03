@@ -12556,4 +12556,9 @@
   proargnames => '{pid,io_id,io_generation,state,operation,off,length,target,handle_data_len,raw_result,result,target_desc,f_sync,f_localmem,f_buffered}',
   prosrc => 'pg_get_aios' },
 
+{ oid =>  9474, descr => 'is toast compression method available?',
+  proname => 'pg_compression_available', prokind => 'f',
+  provolatile => 'i', prorettype => 'bool', proargtypes => 'text',
+  prosrc => 'pg_compression_available' },
+
 ]
