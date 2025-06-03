@@ -21,6 +21,9 @@
 #include "access/toast_compression.h"
 #include "common/pg_lzcompress.h"
 #include "varatt.h"
+#include "fmgr.h"
+#include "parser/scansup.h"
+#include "utils/builtins.h"
 
 /* GUC */
 int			default_toast_compression = TOAST_PGLZ_COMPRESSION;
@@ -313,4 +316,33 @@ GetCompressionMethodName(char method)
 			elog(ERROR, "invalid compression method %c", method);
 			return NULL;		/* keep compiler quiet */
 	}
+}
+
+/*
+ * pg_compression_available(text) → bool
+ *
+ * True if the named TOAST compressor method was compiled into this server.
+ */
+Datum
+pg_compression_available(PG_FUNCTION_ARGS)
+{
+	text	   *name = PG_GETARG_TEXT_PP(0);
+	char	   *cname = downcase_truncate_identifier(text_to_cstring(name),
+													 NAMEDATALEN, false);
+
+	/* pglz is always there */
+	if (strcmp(cname, "pglz") == 0)
+		PG_RETURN_BOOL(true);
+
+#ifdef USE_LZ4
+	if (strcmp(cname, "lz4") == 0)
+		PG_RETURN_BOOL(true);
+#endif
+
+#ifdef USE_ZSTD
+	if (strcmp(cname, "zstd") == 0)
+		PG_RETURN_BOOL(true);
+#endif
+
+	PG_RETURN_BOOL(false);
 }

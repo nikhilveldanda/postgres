@@ -1,17 +1,23 @@
-CREATE SCHEMA pglz;
-SET search_path TO pglz, public;
+SELECT NOT(pg_compression_available('lz4')) AS skip_test \gset
+\if :skip_test
+   \echo '*** skipping lz4 tests (lz4 not available) ***'
+   \quit
+\endif
+
+CREATE SCHEMA lz4;
+SET search_path TO lz4, public;
 
 \set HIDE_TOAST_COMPRESSION false
 
 -- ensure we get stable results regardless of installation's default
-SET default_toast_compression = 'pglz';
+SET default_toast_compression = 'lz4';
 
 -- test creating table with compression method
 CREATE TABLE cmdata(f1 text COMPRESSION pglz);
 CREATE INDEX idx ON cmdata(f1);
 INSERT INTO cmdata VALUES(repeat('1234567890', 1000));
 \d+ cmdata
-CREATE TABLE cmdata1(f1 TEXT COMPRESSION pglz);
+CREATE TABLE cmdata1(f1 TEXT COMPRESSION lz4);
 INSERT INTO cmdata1 VALUES(repeat('1234567890', 1004));
 \d+ cmdata1
 
@@ -86,7 +92,7 @@ SELECT pg_column_compression(f1) FROM cmdata1;
 SELECT pg_column_compression(x) FROM compressmv;
 
 -- test compression with partition
-CREATE TABLE cmpart(f1 text COMPRESSION pglz) PARTITION BY HASH(f1);
+CREATE TABLE cmpart(f1 text COMPRESSION lz4) PARTITION BY HASH(f1);
 CREATE TABLE cmpart1 PARTITION OF cmpart FOR VALUES WITH (MODULUS 2, REMAINDER 0);
 CREATE TABLE cmpart2(f1 text COMPRESSION pglz);
 
@@ -97,14 +103,16 @@ SELECT pg_column_compression(f1) FROM cmpart1;
 SELECT pg_column_compression(f1) FROM cmpart2;
 
 -- test compression with inheritance
+CREATE TABLE cminh() INHERITS(cmdata, cmdata1); -- error
+CREATE TABLE cminh(f1 TEXT COMPRESSION lz4) INHERITS(cmdata); -- error
 CREATE TABLE cmdata3(f1 text);
 CREATE TABLE cminh() INHERITS (cmdata, cmdata3);
 
 -- test default_toast_compression GUC
-SET default_toast_compression = 'pglz';
+SET default_toast_compression = 'lz4';
 
 -- test alter compression method
-ALTER TABLE cmdata ALTER COLUMN f1 SET COMPRESSION pglz;
+ALTER TABLE cmdata ALTER COLUMN f1 SET COMPRESSION lz4;
 INSERT INTO cmdata VALUES (repeat('123456789', 4004));
 \d+ cmdata
 SELECT pg_column_compression(f1) FROM cmdata;
@@ -113,12 +121,12 @@ ALTER TABLE cmdata2 ALTER COLUMN f1 SET COMPRESSION default;
 \d+ cmdata2
 
 -- test alter compression method for materialized views
-ALTER MATERIALIZED VIEW compressmv ALTER COLUMN x SET COMPRESSION pglz;
+ALTER MATERIALIZED VIEW compressmv ALTER COLUMN x SET COMPRESSION lz4;
 \d+ compressmv
 
 -- test alter compression method for partitioned tables
 ALTER TABLE cmpart1 ALTER COLUMN f1 SET COMPRESSION pglz;
-ALTER TABLE cmpart2 ALTER COLUMN f1 SET COMPRESSION pglz;
+ALTER TABLE cmpart2 ALTER COLUMN f1 SET COMPRESSION lz4;
 
 -- new data should be compressed with the current compression method
 INSERT INTO cmpart VALUES (repeat('123456789', 1004));
@@ -133,7 +141,7 @@ SELECT pg_column_compression(f1) FROM cmdata;
 
 -- test expression index
 DROP TABLE cmdata2;
-CREATE TABLE cmdata2 (f1 TEXT COMPRESSION pglz, f2 TEXT COMPRESSION pglz);
+CREATE TABLE cmdata2 (f1 TEXT COMPRESSION pglz, f2 TEXT COMPRESSION lz4);
 CREATE UNIQUE INDEX idx1 ON cmdata2 ((f1 || f2));
 INSERT INTO cmdata2 VALUES((SELECT array_agg(fipshash(g::TEXT))::TEXT FROM
 generate_series(1, 50) g), VERSION());
