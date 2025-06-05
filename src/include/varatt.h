@@ -28,14 +28,28 @@
  * you need to memcpy from the tuple into a local struct variable before
  * you can look at these fields!  (The reason we use memcmp is to avoid
  * having to do that just to detect equality of two TOAST pointers...)
+ *
+ * Optional trailer (only when va_extinfo top bits = 11):
+ *	extended.cmp.va_ecinfo – 1 byte where:
+ *		1. Bits 7–1 encode (cmid − 2), so cmid ∈ [2…129].
+ *		2. Bit 0 is a flag indicating if the algorithm expects extra metadata.
  */
 typedef struct varatt_external
 {
 	int32		va_rawsize;		/* Original data size (includes header) */
 	uint32		va_extinfo;		/* External saved size (without header) and
-								 * compression method */
+								 * compression method or VARATT_4BCE_EXTFLAG
+								 * flag */
 	Oid			va_valueid;		/* Unique ID of value within TOAST table */
 	Oid			va_toastrelid;	/* RelID of TOAST table containing it */
+	/* -------- optional trailer -------- */
+	union
+	{
+		struct					/* compression-method trailer */
+		{
+			uint8		va_ecinfo;	/* Extended compression methods info */
+		}			cmp;
+	}			extended;		/* "extended" = optional bytes */
 }			varatt_external;
 
 /*
@@ -93,11 +107,18 @@ typedef enum vartag_external
 #define VARTAG_IS_EXPANDED(tag) \
 	(((tag) & ~1) == VARTAG_EXPANDED_RO)
 
-#define VARTAG_SIZE(tag) \
-	((tag) == VARTAG_INDIRECT ? sizeof(varatt_indirect) : \
-	 VARTAG_IS_EXPANDED(tag) ? sizeof(varatt_expanded) : \
-	 (tag) == VARTAG_ONDISK ? sizeof(varatt_external) : \
-	 (AssertMacro(false), 0))
+#define MEMBER_SIZE(type, member)  sizeof( ((type *)0)->member )
+
+#define VARTAG_SIZE(PTR)																				\
+(																										\
+	VARTAG_EXTERNAL(PTR) == VARTAG_INDIRECT ? sizeof(varatt_indirect) :									\
+	VARTAG_IS_EXPANDED(VARTAG_EXTERNAL(PTR)) ? sizeof(varatt_expanded) :								\
+	VARTAG_EXTERNAL(PTR) == VARTAG_ONDISK ?																\
+		(offsetof(varatt_external, extended) +															\
+			((READ_U32_UNALIGNED((const uint8 *)(PTR) + VARHDRSZ_EXTERNAL +								\
+				offsetof(varatt_external, va_extinfo)) >> VARLENA_EXTSIZE_BITS) == VARATT_4BCE_EXTFLAG	\
+				? MEMBER_SIZE(varatt_external, extended.cmp) : 0)) : (AssertMacro(false), 0)			\
+)
 
 /*
  * These structs describe the header of a varlena object that may have been
@@ -122,6 +143,17 @@ typedef union
 								 * compression method; see va_extinfo */
 		char		va_data[FLEXIBLE_ARRAY_MEMBER]; /* Compressed data */
 	}			va_compressed;
+	struct
+	{
+		uint32		va_header;
+		uint32		va_tcinfo;	/* Original data size (excludes header) and
+								 * compression method or VARATT_4BCE_EXTFLAG
+								 * flag; see va_extinfo */
+		uint8		va_ecinfo;	/** va_ecinfo – 1 byte where:
+								 * 1. Bits 7–1 encode (cmid − 2), so cmid ∈ [2…129].
+								 * 2. Bit 0 is a flag indicating if the algorithm expects extra metadata. */
+		char		va_data[FLEXIBLE_ARRAY_MEMBER];
+	}			va_compressed_ext;
 } varattrib_4b;
 
 typedef struct
@@ -206,6 +238,18 @@ typedef struct
 	(((varattrib_1b_e *) (PTR))->va_header = 0x80, \
 	 ((varattrib_1b_e *) (PTR))->va_tag = (tag))
 
+/**
+ * Safely read a 32-bit unsigned integer from *any* address, even when
+ * that address is **not** naturally aligned to 4 bytes.  We do the load
+ * one byte at a time and re-assemble the word in *host* byte order.
+ * For BIG ENDIAN systems.
+ */
+#define READ_U32_UNALIGNED(ptr)						\
+	( (uint32) (((const uint8 *)(ptr))[3])			\
+	| ((uint32)(((const uint8 *)(ptr))[2]) <<  8)	\
+	| ((uint32)(((const uint8 *)(ptr))[1]) << 16)	\
+	| ((uint32)(((const uint8 *)(ptr))[0]) << 24) )
+
 #else							/* !WORDS_BIGENDIAN */
 
 #define VARATT_IS_4B(PTR) \
@@ -238,6 +282,17 @@ typedef struct
 #define SET_VARTAG_1B_E(PTR,tag) \
 	(((varattrib_1b_e *) (PTR))->va_header = 0x01, \
 	 ((varattrib_1b_e *) (PTR))->va_tag = (tag))
+/**
+ * Safely read a 32-bit unsigned integer from *any* address, even when
+ * that address is **not** naturally aligned to 4 bytes.  We do the load
+ * one byte at a time and re-assemble the word in *host* byte order.
+ * For LITTLE ENDIAN systems
+ */
+#define READ_U32_UNALIGNED(ptr)						\
+	( (uint32) (((const uint8 *)(ptr))[0])			\
+	| ((uint32)(((const uint8 *)(ptr))[1]) <<  8)	\
+	| ((uint32)(((const uint8 *)(ptr))[2]) << 16)	\
+	| ((uint32)(((const uint8 *)(ptr))[3]) << 24) )
 
 #endif							/* WORDS_BIGENDIAN */
 
@@ -282,7 +337,7 @@ typedef struct
 #define VARDATA_SHORT(PTR)					VARDATA_1B(PTR)
 
 #define VARTAG_EXTERNAL(PTR)				VARTAG_1B_E(PTR)
-#define VARSIZE_EXTERNAL(PTR)				(VARHDRSZ_EXTERNAL + VARTAG_SIZE(VARTAG_EXTERNAL(PTR)))
+#define VARSIZE_EXTERNAL(PTR)				(VARHDRSZ_EXTERNAL + VARTAG_SIZE(PTR))
 #define VARDATA_EXTERNAL(PTR)				VARDATA_1B_E(PTR)
 
 #define VARATT_IS_COMPRESSED(PTR)			VARATT_IS_4B_C(PTR)
@@ -325,23 +380,38 @@ typedef struct
 	 (VARATT_IS_1B(PTR) ? VARDATA_1B(PTR) : VARDATA_4B(PTR))
 
 /* Decompressed size and compression method of a compressed-in-line Datum */
-#define VARDATA_COMPRESSED_GET_EXTSIZE(PTR) \
-	(((varattrib_4b *) (PTR))->va_compressed.va_tcinfo & VARLENA_EXTSIZE_MASK)
+#define VARDATA_COMPRESSED_GET_EXTSIZE(PTR)														\
+	(																							\
+		(VARATT_IS_4BCE(PTR))																	\
+			? ( ((varattrib_4b *)(PTR))->va_compressed_ext.va_tcinfo & VARLENA_EXTSIZE_MASK )	\
+			: ( ((varattrib_4b *)(PTR))->va_compressed.va_tcinfo & VARLENA_EXTSIZE_MASK )		\
+	)
 #define VARDATA_COMPRESSED_GET_COMPRESS_METHOD(PTR) \
-	(((varattrib_4b *) (PTR))->va_compressed.va_tcinfo >> VARLENA_EXTSIZE_BITS)
+	( (VARATT_IS_4BCE(PTR)) ? VARATT_4BCE_GET_COMPRESS_METHOD(((varattrib_4b *) (PTR))->va_compressed_ext.va_ecinfo) \
+	: (((varattrib_4b *) (PTR))->va_compressed.va_tcinfo >> VARLENA_EXTSIZE_BITS))
 
 /* Same for external Datums; but note argument is a struct varatt_external */
 #define VARATT_EXTERNAL_GET_EXTSIZE(toast_pointer) \
 	((toast_pointer).va_extinfo & VARLENA_EXTSIZE_MASK)
-#define VARATT_EXTERNAL_GET_COMPRESS_METHOD(toast_pointer) \
-	((toast_pointer).va_extinfo >> VARLENA_EXTSIZE_BITS)
+#define VARATT_EXTERNAL_GET_COMPRESS_METHOD(toast_pointer)							\
+	( ((toast_pointer).va_extinfo >> VARLENA_EXTSIZE_BITS) == VARATT_4BCE_EXTFLAG	\
+		? VARATT_4BCE_GET_COMPRESS_METHOD((toast_pointer).extended.cmp.va_ecinfo)	\
+			: (toast_pointer).va_extinfo >> VARLENA_EXTSIZE_BITS )
 
-#define VARATT_EXTERNAL_SET_SIZE_AND_COMPRESS_METHOD(toast_pointer, len, cm) \
-	do { \
-		Assert((cm) == TOAST_PGLZ_COMPRESSION_ID || \
-			   (cm) == TOAST_LZ4_COMPRESSION_ID); \
-		((toast_pointer).va_extinfo = \
-			(len) | ((uint32) (cm) << VARLENA_EXTSIZE_BITS)); \
+#define VARATT_EXTERNAL_SET_SIZE_AND_COMPRESS_METHOD(toast_pointer, len, cm)						\
+	do {																							\
+		Assert((cm) == TOAST_PGLZ_COMPRESSION_ID ||													\
+				(cm) == TOAST_LZ4_COMPRESSION_ID);													\
+		if (!TOAST_CMPID_EXTENDED((cm)))															\
+			/* method fits in the low bits of va_extinfo */											\
+			(toast_pointer).va_extinfo = (uint32)(len) | ((uint32) (cm) << VARLENA_EXTSIZE_BITS);	\
+		else																						\
+		{																							\
+			/* set “extended” flag and store the extra byte */										\
+			(toast_pointer).va_extinfo = (uint32)(len) |											\
+				(VARATT_4BCE_EXTFLAG << VARLENA_EXTSIZE_BITS);										\
+			VARATT_4BCE_SET_COMPRESS_METHOD((toast_pointer).extended.cmp.va_ecinfo, (cm));			\
+		}																							\
 	} while (0)
 
 /*
@@ -354,5 +424,42 @@ typedef struct
 #define VARATT_EXTERNAL_IS_COMPRESSED(toast_pointer) \
 	(VARATT_EXTERNAL_GET_EXTSIZE(toast_pointer) < \
 	 (toast_pointer).va_rawsize - VARHDRSZ)
+
+/* Upper-two-bit pattern 0b11 marks “extended compression methods used. */
+#define VARATT_4BCE_EXTFLAG             0x3
+
+/*
+ * Layout of the extra 1-byte trailer for extended compression info:
+ *
+ *   bit 7   6   5   4   3   2   1   0
+ *  +---+---+---+---+---+---+---+---+
+ *  |      cmid_minus2          | F |
+ *  +---+---+---+---+---+---+---+---+
+ *
+ * • Bits 7–1 (cmid_minus2):
+ *     7-bit field holding (cmid − 2). The actual compression‐method ID (cmid)
+ *     is (raw + 2), so raw ∈ [0…127] maps to cmid ∈ [2…129].
+ *
+ * • Bit 0 (F):
+ *     Single flag bit reserved for indicating whether this compression method has associated metadata.
+ */
+#define VARATT_4BCE_SET_COMPRESS_METHOD(va_ecinfo, cmid)				\
+	do {																\
+		bool meta = false;												\
+		(va_ecinfo) = (uint8)((((cmid) - 2) << 1) | ((meta) & 0x01));	\
+	} while (0)
+
+#define VARATT_4BCE_GET_COMPRESS_METHOD(raw)	((((raw) >> 1) & 0x7F) + 2)
+
+/* Does this varattrib use the “compressed-extended” format? */
+#define VARATT_IS_4BCE(ptr) \
+	((((varattrib_4b *)(ptr))->va_compressed_ext.va_tcinfo >> VARLENA_EXTSIZE_BITS) \
+		== VARATT_4BCE_EXTFLAG)
+
+/* Access the start of the compressed payload */
+#define VARDATA_4BCE(ptr) \
+	(((varattrib_4b *)(ptr))->va_compressed_ext.va_data)
+
+#define VARHDRSZ_4BCE	(offsetof(varattrib_4b, va_compressed_ext.va_data))
 
 #endif

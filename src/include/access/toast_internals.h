@@ -18,31 +18,23 @@
 #include "utils/snapshot.h"
 
 /*
- *	The information at the start of the compressed toast data.
- */
-typedef struct toast_compress_header
-{
-	int32		vl_len_;		/* varlena header (do not touch directly!) */
-	uint32		tcinfo;			/* 2 bits for compression method and 30 bits
-								 * external size; see va_extinfo */
-} toast_compress_header;
-
-/*
  * Utilities for manipulation of header information for compressed
  * toast entries.
  */
-#define TOAST_COMPRESS_EXTSIZE(ptr) \
-	(((toast_compress_header *) (ptr))->tcinfo & VARLENA_EXTSIZE_MASK)
-#define TOAST_COMPRESS_METHOD(ptr) \
-	(((toast_compress_header *) (ptr))->tcinfo >> VARLENA_EXTSIZE_BITS)
-
-#define TOAST_COMPRESS_SET_SIZE_AND_COMPRESS_METHOD(ptr, len, cm_method) \
-	do { \
-		Assert((len) > 0 && (len) <= VARLENA_EXTSIZE_MASK); \
-		Assert((cm_method) == TOAST_PGLZ_COMPRESSION_ID || \
-			   (cm_method) == TOAST_LZ4_COMPRESSION_ID); \
-		((toast_compress_header *) (ptr))->tcinfo = \
-			(len) | ((uint32) (cm_method) << VARLENA_EXTSIZE_BITS); \
+#define TOAST_COMPRESS_SET_SIZE_AND_COMPRESS_METHOD(ptr, len, cm_method)														\
+	do {																														\
+		Assert((len) > 0 && (len) <= VARLENA_EXTSIZE_MASK);																		\
+		Assert((cm_method) == TOAST_PGLZ_COMPRESSION_ID ||																		\
+				(cm_method) == TOAST_LZ4_COMPRESSION_ID);																		\
+		if (!TOAST_CMPID_EXTENDED((cm_method)))																					\
+			((varattrib_4b *)(ptr))->va_compressed.va_tcinfo = ((uint32)(len)) | ((uint32)(cm_method) << VARLENA_EXTSIZE_BITS);	\
+		else																													\
+		{																														\
+			/* extended path: mark EXT flag in tcinfo */																		\
+			((varattrib_4b *)(ptr))->va_compressed_ext.va_tcinfo =																\
+				((uint32)(len)) | ((uint32)(VARATT_4BCE_EXTFLAG) << VARLENA_EXTSIZE_BITS);										\
+			VARATT_4BCE_SET_COMPRESS_METHOD(((varattrib_4b *)(ptr))->va_compressed_ext.va_ecinfo, (cm_method));					\
+		}																														\
 	} while (0)
 
 extern Datum toast_compress_datum(Datum value, char cmethod);

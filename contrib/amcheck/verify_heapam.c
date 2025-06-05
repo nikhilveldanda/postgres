@@ -1786,7 +1786,7 @@ check_tuple_attribute(HeapCheckContext *ctx)
 		bool		valid = false;
 
 		/* Compressed attributes should have a valid compression method */
-		cmid = TOAST_COMPRESS_METHOD(&toast_pointer);
+		cmid = VARATT_EXTERNAL_GET_COMPRESS_METHOD(toast_pointer);
 		switch (cmid)
 		{
 				/* List of all valid compression method IDs */

@@ -143,6 +143,7 @@ toast_save_datum(Relation rel, Datum value,
 	Pointer		dval = DatumGetPointer(value);
 	int			num_indexes;
 	int			validIndex;
+	ToastCompressionId cm = TOAST_INVALID_COMPRESSION_ID;
 
 	Assert(!VARATT_IS_EXTERNAL(value));
 
@@ -183,10 +184,11 @@ toast_save_datum(Relation rel, Datum value,
 		data_todo = VARSIZE(dval) - VARHDRSZ;
 		/* rawsize in a compressed datum is just the size of the payload */
 		toast_pointer.va_rawsize = VARDATA_COMPRESSED_GET_EXTSIZE(dval) + VARHDRSZ;
+		cm = VARDATA_COMPRESSED_GET_COMPRESS_METHOD(dval);
 
 		/* set external size and compression method */
-		VARATT_EXTERNAL_SET_SIZE_AND_COMPRESS_METHOD(toast_pointer, data_todo,
-													 VARDATA_COMPRESSED_GET_COMPRESS_METHOD(dval));
+		VARATT_EXTERNAL_SET_SIZE_AND_COMPRESS_METHOD(toast_pointer, data_todo, cm);
+
 		/* Assert that the numbers look like it's compressed */
 		Assert(VARATT_EXTERNAL_IS_COMPRESSED(toast_pointer));
 	}
@@ -368,9 +370,9 @@ toast_save_datum(Relation rel, Datum value,
 	/*
 	 * Create the TOAST pointer value that we'll return
 	 */
-	result = (struct varlena *) palloc(TOAST_POINTER_SIZE);
+	result = (struct varlena *) palloc(TOAST_POINTER_SIZE(cm));
 	SET_VARTAG_EXTERNAL(result, VARTAG_ONDISK);
-	memcpy(VARDATA_EXTERNAL(result), &toast_pointer, sizeof(toast_pointer));
+	memcpy(VARDATA_EXTERNAL(result), &toast_pointer, TOAST_POINTER_SIZE(cm) - VARHDRSZ_EXTERNAL);
 
 	return PointerGetDatum(result);
 }
