@@ -1,0 +1,5 @@
+SELECT NOT(pg_compression_available('zstd')) AS skip_test \gset
+\if :skip_test
+   \echo '*** skipping zstd tests (zstd not available) ***'
+*** skipping zstd tests (zstd not available) ***
+   \quit

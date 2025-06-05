@@ -337,16 +337,19 @@ WITH ( MODULUS <replaceable class="parameter">numeric_literal</replaceable>, REM
      <para>
       The <literal>COMPRESSION</literal> clause sets the compression method
       for the column.  Compression is supported only for variable-width data
-      types, and is used only when the column's storage mode
+      types, and is used only when the column’s storage mode
       is <literal>main</literal> or <literal>extended</literal>.
       (See <xref linkend="sql-altertable"/> for information on
       column storage modes.) Setting this property for a partitioned table
       has no direct effect, because such tables have no storage of their own,
       but the configured value will be inherited by newly-created partitions.
-      The supported compression methods are <literal>pglz</literal> and
-      <literal>lz4</literal>.  (<literal>lz4</literal> is available only if
-      <option>--with-lz4</option> was used when building
-      <productname>PostgreSQL</productname>.)  In addition,
+      The supported compression methods are
+      <literal>pglz</literal>,
+      <literal>lz4</literal> (if <productname>PostgreSQL</productname>
+      was compiled with <option>--with-lz4</option>),
+      and <literal>zstd</literal> (if <productname>PostgreSQL</productname>
+      was compiled with <option>--with-zstd</option>).
+      In addition,
       <replaceable class="parameter">compression_method</replaceable>
       can be <literal>default</literal> to explicitly specify the default
       behavior, which is to consult the
