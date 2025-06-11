@@ -25288,6 +25288,26 @@ SELECT * FROM pg_ls_dir('.') WITH ORDINALITY AS t(ls,n);
         This is equivalent to <function>current_user</function>.
        </para></entry>
       </row>
+      <row>
+        <entry role="func_table_entry">
+          <para role="func_signature">
+            <indexterm>
+              <primary>pg_compression_available</primary>
+            </indexterm>
+            <function>pg_compression_available</function> ( <type>text</type> )
+            <returnvalue>boolean</returnvalue>
+          </para>
+          <para>
+            Returns <literal>true</literal> if the given compression method name is supported in this PostgreSQL build.
+            The built-in compression method <literal>pglz</literal> is always available because it is included
+            in the core server code and does not require any additional compile-time option or external library.
+            In contrast, <literal>lz4</literal> will return <literal>true</literal> only if PostgreSQL was
+            compiled with the <literal>--with-lz4</literal> flag, and <literal>zstd</literal> will return
+            <literal>true</literal> only if compiled with the <literal>--with-zstd</literal> flag.
+            If the input name does not match any supported method, the function returns <literal>false</literal>.
+          </para>
+        </entry>
+      </row>
      </tbody>
     </tgroup>
    </table>
