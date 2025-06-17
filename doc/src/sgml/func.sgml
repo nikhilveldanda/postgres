@@ -28105,6 +28105,11 @@ acl      | {postgres=arwdDxtm/postgres,foo=r/postgres}
       </row>
 
       <row>
+       <entry><structfield>next_toast_id</structfield></entry>
+       <entry><type>bigint</type></entry>
+      </row>
+
+      <row>
        <entry><structfield>oldest_xid</structfield></entry>
        <entry><type>xid</type></entry>
       </row>
@@ -30061,7 +30066,7 @@ postgres=# SELECT '0/0'::pg_lsn + pd.segment_number * ps.setting::int + :offset 
          <primary>pg_column_toast_chunk_id</primary>
         </indexterm>
         <function>pg_column_toast_chunk_id</function> ( <type>"any"</type> )
-        <returnvalue>oid</returnvalue>
+        <returnvalue>int8</returnvalue>
        </para>
        <para>
         Shows the <structfield>chunk_id</structfield> of an on-disk
