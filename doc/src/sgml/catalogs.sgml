@@ -1249,6 +1249,7 @@
        (see <xref linkend="guc-default-toast-compression"/>).  Otherwise,
        <literal>'p'</literal> selects pglz compression, while
        <literal>'l'</literal> selects <productname>LZ4</productname>
+       compression, and <literal>'z'</literal> selects <productname>ZSTD</productname>
        compression.  However, this field is ignored
        whenever <structfield>attstorage</structfield> does not allow
        compression.

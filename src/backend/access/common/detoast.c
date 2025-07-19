@@ -247,10 +247,10 @@ detoast_attr_slice(struct varlena *attr,
 			 * Determine maximum amount of compressed data needed for a prefix
 			 * of a given length (after decompression).
 			 *
-			 * At least for now, if it's LZ4 data, we'll have to fetch the
-			 * whole thing, because there doesn't seem to be an API call to
-			 * determine how much compressed data we need to be sure of being
-			 * able to decompress the required slice.
+			 * At least for now, if it's LZ4 or Zstandard data, we'll have to
+			 * fetch the whole thing, because there doesn't seem to be an API
+			 * call to determine how much compressed data we need to be sure
+			 * of being able to decompress the required slice.
 			 */
 			if (toast_pointer.compression_method == TOAST_PGLZ_COMPRESSION_ID)
 				max_size = pglz_maximum_compressed_size(slicelimit, max_size);
@@ -491,6 +491,8 @@ toast_decompress_datum(struct varlena *attr)
 			return pglz_decompress_datum(attr);
 		case TOAST_LZ4_COMPRESSION_ID:
 			return lz4_decompress_datum(attr);
+		case TOAST_ZSTD_COMPRESSION_ID:
+			return zstd_decompress_datum(attr);
 		default:
 			elog(ERROR, "invalid compression method id %d", cmid);
 			return NULL;		/* keep compiler quiet */
@@ -534,6 +536,8 @@ toast_decompress_datum_slice(struct varlena *attr, int32 slicelength)
 			return pglz_decompress_datum_slice(attr, slicelength);
 		case TOAST_LZ4_COMPRESSION_ID:
 			return lz4_decompress_datum_slice(attr, slicelength);
+		case TOAST_ZSTD_COMPRESSION_ID:
+			return zstd_decompress_datum_slice(attr, slicelength);
 		default:
 			elog(ERROR, "invalid compression method id %d", cmid);
 			return NULL;		/* keep compiler quiet */

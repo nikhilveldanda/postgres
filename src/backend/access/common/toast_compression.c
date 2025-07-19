@@ -17,6 +17,10 @@
 #include <lz4.h>
 #endif
 
+#ifdef USE_ZSTD
+#include <zstd.h>
+#endif
+
 #include "access/detoast.h"
 #include "access/toast_compression.h"
 #include "access/toast_external.h"
@@ -246,6 +250,132 @@ lz4_decompress_datum_slice(const struct varlena *value, int32 slicelength)
 #endif
 }
 
+/* Compress datum using ZSTD */
+struct varlena *
+zstd_compress_datum(const struct varlena *value)
+{
+#ifdef USE_ZSTD
+	uint32		valsize = VARSIZE_ANY_EXHDR(value);
+	size_t		max_size = ZSTD_compressBound(valsize);
+	struct varlena *compressed;
+	size_t		cmp_size;
+
+	/* Allocate space for the compressed varlena (header + data) */
+	compressed = (struct varlena *) palloc(max_size + VARHDRSZ_EXTENDED_COMPRESSED);
+
+	cmp_size = ZSTD_compress(VARDATA_EXTENDED_COMPRESSED(compressed),
+							 max_size,
+							 VARDATA_ANY(value),
+							 valsize,
+							 ZSTD_CLEVEL_DEFAULT);
+
+	if (ZSTD_isError(cmp_size))
+		elog(ERROR, "zstd compression failed");
+
+	/**
+	 *  If compression did not reduce size, return NULL so that the uncompressed data is stored
+	 */
+	if (cmp_size > valsize)
+	{
+		pfree(compressed);
+		return NULL;
+	}
+
+	/* Set the compressed size in the varlena header */
+	SET_VARSIZE_COMPRESSED(compressed, cmp_size + VARHDRSZ_EXTENDED_COMPRESSED);
+
+	return compressed;
+
+#else
+	NO_COMPRESSION_SUPPORT("zstd");
+	return NULL;
+#endif
+}
+
+/* Decompression routine */
+struct varlena *
+zstd_decompress_datum(const struct varlena *value)
+{
+#ifdef USE_ZSTD
+	uint32		actual_size_exhdr = VARDATA_COMPRESSED_GET_EXTSIZE(value);
+	uint32		cmplen;
+	struct varlena *result;
+	size_t		ucmplen;
+
+	cmplen = VARSIZE_ANY(value) - VARHDRSZ_EXTENDED_COMPRESSED;
+
+	/* Allocate space for the uncompressed data */
+	result = (struct varlena *) palloc(actual_size_exhdr + VARHDRSZ);
+
+	ucmplen = ZSTD_decompress(VARDATA(result),
+							  actual_size_exhdr,
+							  VARDATA_EXTENDED_COMPRESSED(value),
+							  cmplen);
+
+	if (ZSTD_isError(ucmplen))
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg_internal("compressed zstd data is corrupt")));
+
+	/* Set final size in the varlena header */
+	SET_VARSIZE(result, ucmplen + VARHDRSZ);
+	return result;
+
+#else
+	NO_COMPRESSION_SUPPORT("zstd");
+	return NULL;
+#endif
+}
+
+/* Decompress a slice of the datum */
+struct varlena *
+zstd_decompress_datum_slice(const struct varlena *value, int32 slicelength)
+{
+#ifdef USE_ZSTD
+	/* ZSTD no dictionary compression */
+
+	struct varlena *result;
+	ZSTD_inBuffer inBuf;
+	ZSTD_outBuffer outBuf;
+	size_t		ret;
+	ZSTD_DCtx  *zstdDctx = ZSTD_createDCtx();
+
+	if (!zstdDctx)
+		elog(ERROR, "could not create zstd decompression context");
+
+	inBuf.src = VARDATA_EXTENDED_COMPRESSED(value);
+	inBuf.size = VARSIZE_ANY(value) - VARHDRSZ_EXTENDED_COMPRESSED;
+	inBuf.pos = 0;
+
+	result = (struct varlena *) palloc(slicelength + VARHDRSZ);
+	outBuf.dst = (char *) result + VARHDRSZ;
+	outBuf.size = slicelength;
+	outBuf.pos = 0;
+
+	/* Common decompression loop */
+	while (inBuf.pos < inBuf.size && outBuf.pos < outBuf.size)
+	{
+		ret = ZSTD_decompressStream(zstdDctx, &outBuf, &inBuf);
+		if (ZSTD_isError(ret))
+		{
+			ZSTD_freeDCtx(zstdDctx);
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg_internal("compressed zstd data is corrupt")));
+		}
+	}
+
+	ZSTD_freeDCtx(zstdDctx);
+	Assert(outBuf.size == slicelength && outBuf.pos == slicelength);
+	SET_VARSIZE(result, outBuf.pos + VARHDRSZ);
+
+	return result;
+#else
+	NO_COMPRESSION_SUPPORT("zstd");
+	return NULL;
+#endif
+}
+
 /*
  * Extract compression ID from a varlena.
  *
@@ -287,6 +417,13 @@ CompressionNameToMethod(const char *compression)
 #endif
 		return TOAST_LZ4_COMPRESSION;
 	}
+	else if (strcmp(compression, "zstd") == 0)
+	{
+#ifndef USE_ZSTD
+		NO_COMPRESSION_SUPPORT("zstd");
+#endif
+		return TOAST_ZSTD_COMPRESSION;
+	}
 
 	return InvalidCompressionMethod;
 }
@@ -303,6 +440,8 @@ GetCompressionMethodName(char method)
 			return "pglz";
 		case TOAST_LZ4_COMPRESSION:
 			return "lz4";
+		case TOAST_ZSTD_COMPRESSION:
+			return "zstd";
 		default:
 			elog(ERROR, "invalid compression method %c", method);
 			return NULL;		/* keep compiler quiet */

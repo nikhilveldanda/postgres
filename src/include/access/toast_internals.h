@@ -21,13 +21,21 @@
  * Utilities for manipulation of header information for compressed
  * toast entries.
  */
-#define TOAST_COMPRESS_SET_SIZE_AND_COMPRESS_METHOD(ptr, len, cm_method) \
-	do { \
-		Assert((len) > 0 && (len) <= VARLENA_EXTSIZE_MASK); \
-		Assert((cm_method) == TOAST_PGLZ_COMPRESSION_ID || \
-			   (cm_method) == TOAST_LZ4_COMPRESSION_ID); \
-		((varattrib_4b *)(ptr))->va_compressed.va_tcinfo = \
-			((uint32)(len)) | ((uint32)(cm_method) << VARLENA_EXTSIZE_BITS); \
+#define TOAST_COMPRESS_SET_SIZE_AND_COMPRESS_METHOD(ptr, len, cm_method)														\
+	do {																														\
+		Assert((len) > 0 && (len) <= VARLENA_EXTSIZE_MASK);																		\
+		Assert((cm_method) == TOAST_PGLZ_COMPRESSION_ID ||																		\
+				(cm_method) == TOAST_LZ4_COMPRESSION_ID ||																		\
+				(cm_method) == TOAST_ZSTD_COMPRESSION_ID);																		\
+		if (!CompressionMethodIdIsExtended((cm_method)))																		\
+			((varattrib_4b *)(ptr))->va_compressed.va_tcinfo = ((uint32)(len)) | ((uint32)(cm_method) << VARLENA_EXTSIZE_BITS);	\
+		else																													\
+		{																														\
+			/* extended path: mark EXT flag in tcinfo */																		\
+			((varattrib_4b *)(ptr))->va_compressed_ext.va_tcinfo =																\
+				((uint32)(len)) | ((uint32)(VARATT_CE_FLAG) << VARLENA_EXTSIZE_BITS);											\
+			VARATT_CE_SET_COMPRESS_METHOD(((varattrib_4b *)(ptr))->va_compressed_ext.va_ecinfo, (cm_method));					\
+		}																														\
 	} while (0)
 
 extern Datum toast_compress_datum(Datum value, char cmethod);
