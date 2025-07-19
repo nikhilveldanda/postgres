@@ -14,6 +14,7 @@
 #ifndef TOAST_HELPER_H
 #define TOAST_HELPER_H
 
+#include "access/toast_type.h"
 #include "utils/rel.h"
 
 /*
@@ -33,6 +34,7 @@ typedef struct
 	int32		tai_size;
 	uint8		tai_colflags;
 	char		tai_compression;
+	int32		toast_pointer_size;
 } ToastAttrInfo;
 
 /*
@@ -47,11 +49,11 @@ typedef struct
 	 * should be NULL in the case of an insert.
 	 */
 	Relation	ttc_rel;		/* the relation that contains the tuple */
-	int32		ttc_toast_pointer_size;	/* size of external TOAST pointer */
 	Datum	   *ttc_values;		/* values from the tuple columns */
 	bool	   *ttc_isnull;		/* null flags for the tuple columns */
 	Datum	   *ttc_oldvalues;	/* values from previous tuple */
 	bool	   *ttc_oldisnull;	/* null flags from previous tuple */
+	ToastTypeId toast_type;		/* toast table type */
 
 	/*
 	 * Before calling toast_tuple_init, the caller should set ttc_attr to

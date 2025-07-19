@@ -51,6 +51,12 @@ typedef enum ToastCompressionId
 #define InvalidCompressionMethod		'\0'
 
 #define CompressionMethodIsValid(cm)  ((cm) != InvalidCompressionMethod)
+#define CompressionMethodIsExtended(cm)	(!(cm == TOAST_PGLZ_COMPRESSION ||		\
+										   cm == TOAST_LZ4_COMPRESSION ||		\
+										   cm == InvalidCompressionMethod))
+#define CompressionMethodIdIsExtended(cmpid)	(!(cmpid == TOAST_PGLZ_COMPRESSION_ID ||	\
+												   cmpid == TOAST_LZ4_COMPRESSION_ID ||		\
+												   cmpid == TOAST_INVALID_COMPRESSION_ID))
 
 
 /* pglz compression/decompression routines */

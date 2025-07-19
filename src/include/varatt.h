@@ -53,17 +53,41 @@ typedef struct varatt_external_int8
 	int32		va_rawsize;		/* Original data size (includes header) */
 	uint32		va_extinfo;		/* External saved size (without header) and
 								 * compression method */
+
 	/*
-	 * Unique ID of value within TOAST table, as two uint32 for alignment
-	 * and padding.
-	 * XXX: think for example about the addition of an extra field for
-	 * meta-data and/or more compression data, even if it's OK here).
+	 * Unique ID of value within TOAST table, as two uint32 for alignment and
+	 * padding.
 	 */
 	uint32		va_valueid_lo;
 	uint32		va_valueid_hi;
 	Oid			va_toastrelid;	/* RelID of TOAST table containing it */
 }			varatt_external_int8;
 
+typedef struct varatt_external_ce_oid
+{
+	int32		va_rawsize;		/* Original data size (includes header) */
+	uint32		va_extinfo;		/* External saved size (without header) and
+								 * VARATT_CE_FLAG in top 2 bits */
+	uint32		va_ecinfo;		/* Extended compression info */
+	Oid			va_valueid;		/* Unique ID of value within TOAST table */
+	Oid			va_toastrelid;	/* RelID of TOAST table containing it */
+}			varatt_external_ce_oid;
+
+typedef struct varatt_external_ce_int8
+{
+	int32		va_rawsize;		/* Original data size (includes header) */
+	uint32		va_extinfo;		/* External saved size (without header) and
+								 * VARATT_CE_FLAG in top 2 bits */
+	uint32		va_ecinfo;		/* Extended compression info */
+
+	/*
+	 * Unique ID of value within TOAST table, as two uint32 for alignment and
+	 * padding.
+	 */
+	uint32		va_valueid_lo;
+	uint32		va_valueid_hi;
+	Oid			va_toastrelid;	/* RelID of TOAST table containing it */
+}			varatt_external_ce_int8;
 
 /*
  * These macros define the "saved size" portion of va_extinfo.  Its remaining
@@ -115,6 +139,8 @@ typedef enum vartag_external
 	VARTAG_EXPANDED_RO = 2,
 	VARTAG_EXPANDED_RW = 3,
 	VARTAG_ONDISK_INT8 = 4,
+	VARTAG_ONDISK_CE_OID = 5,
+	VARTAG_ONDISK_CE_INT8 = 6,
 	VARTAG_ONDISK_OID = 18
 } vartag_external;
 
@@ -127,6 +153,8 @@ typedef enum vartag_external
 	 VARTAG_IS_EXPANDED(tag) ? sizeof(varatt_expanded) : \
 	 (tag) == VARTAG_ONDISK_OID ? sizeof(varatt_external_oid) : \
 	 (tag) == VARTAG_ONDISK_INT8 ? sizeof(varatt_external_int8) : \
+	 (tag) == VARTAG_ONDISK_CE_OID ? sizeof(varatt_external_ce_oid): \
+	 (tag) == VARTAG_ONDISK_CE_INT8 ? sizeof(varatt_external_ce_int8): \
 	 (AssertMacro(false), 0))
 
 /*
@@ -152,6 +180,21 @@ typedef union
 								 * compression method; see va_extinfo */
 		char		va_data[FLEXIBLE_ARRAY_MEMBER]; /* Compressed data */
 	}			va_compressed;
+	struct
+	{
+		uint32		va_header;
+		uint32		va_tcinfo;	/* Original data size (excludes header) and
+								 * compression method or VARATT_CE_FLAG flag;
+								 * see va_extinfo */
+		uint32		va_ecinfo;	/* Extended compression info: 32-bit field
+								 * where only the lower 8 bits are used for
+								 * compression method. Upper 24 bits are
+								 * reserved/unused. Lower 8 bits layout: Bits
+								 * 7–1: encode (cmid − 2), so cmid is
+								 * [2…129] Bit 0: flag for extra metadata
+								 */
+		char		va_data[FLEXIBLE_ARRAY_MEMBER];
+	}			va_compressed_ext;
 } varattrib_4b;
 
 typedef struct
@@ -321,8 +364,13 @@ typedef struct
 	(VARATT_IS_EXTERNAL(PTR) && VARTAG_EXTERNAL(PTR) == VARTAG_ONDISK_OID)
 #define VARATT_IS_EXTERNAL_ONDISK_INT8(PTR) \
 	(VARATT_IS_EXTERNAL(PTR) && VARTAG_EXTERNAL(PTR) == VARTAG_ONDISK_INT8)
+#define VARATT_IS_EXTERNAL_ONDISK_CE_OID(PTR) \
+	(VARATT_IS_EXTERNAL(PTR) && VARTAG_EXTERNAL(PTR) == VARTAG_ONDISK_CE_OID)
+#define VARATT_IS_EXTERNAL_ONDISK_CE_INT8(PTR) \
+	(VARATT_IS_EXTERNAL(PTR) && VARTAG_EXTERNAL(PTR) == VARTAG_ONDISK_CE_INT8)
 #define VARATT_IS_EXTERNAL_ONDISK(PTR) \
-	(VARATT_IS_EXTERNAL_ONDISK_OID(PTR) || VARATT_IS_EXTERNAL_ONDISK_INT8(PTR))
+	(VARATT_IS_EXTERNAL_ONDISK_OID(PTR) || VARATT_IS_EXTERNAL_ONDISK_INT8(PTR) \
+	 || VARATT_IS_EXTERNAL_ONDISK_CE_OID(PTR) || VARATT_IS_EXTERNAL_ONDISK_CE_INT8(PTR))
 #define VARATT_IS_EXTERNAL_INDIRECT(PTR) \
 	(VARATT_IS_EXTERNAL(PTR) && VARTAG_EXTERNAL(PTR) == VARTAG_INDIRECT)
 #define VARATT_IS_EXTERNAL_EXPANDED_RO(PTR) \
@@ -359,10 +407,15 @@ typedef struct
 	 (VARATT_IS_1B(PTR) ? VARDATA_1B(PTR) : VARDATA_4B(PTR))
 
 /* Decompressed size and compression method of a compressed-in-line Datum */
-#define VARDATA_COMPRESSED_GET_EXTSIZE(PTR) \
-	(((varattrib_4b *) (PTR))->va_compressed.va_tcinfo & VARLENA_EXTSIZE_MASK)
+#define VARDATA_COMPRESSED_GET_EXTSIZE(PTR)														\
+	(																							\
+		(VARATT_IS_EXTENDED_COMPRESSED(PTR))													\
+			? ( ((varattrib_4b *)(PTR))->va_compressed_ext.va_tcinfo & VARLENA_EXTSIZE_MASK )	\
+			: ( ((varattrib_4b *)(PTR))->va_compressed.va_tcinfo & VARLENA_EXTSIZE_MASK )		\
+	)
 #define VARDATA_COMPRESSED_GET_COMPRESS_METHOD(PTR) \
-	(((varattrib_4b *) (PTR))->va_compressed.va_tcinfo >> VARLENA_EXTSIZE_BITS)
+	( (VARATT_IS_EXTENDED_COMPRESSED(PTR)) ? VARATT_CE_GET_COMPRESS_METHOD(((varattrib_4b *) (PTR))->va_compressed_ext.va_ecinfo) \
+	: (((varattrib_4b *) (PTR))->va_compressed.va_tcinfo >> VARLENA_EXTSIZE_BITS))
 
 /*
  * Same for external Datums; but note argument is a struct
@@ -370,16 +423,6 @@ typedef struct
  */
 #define VARATT_EXTERNAL_GET_EXTSIZE(toast_pointer) \
 	((toast_pointer).va_extinfo & VARLENA_EXTSIZE_MASK)
-#define VARATT_EXTERNAL_GET_COMPRESS_METHOD(toast_pointer) \
-	((toast_pointer).va_extinfo >> VARLENA_EXTSIZE_BITS)
-
-#define VARATT_EXTERNAL_SET_SIZE_AND_COMPRESS_METHOD(toast_pointer, len, cm) \
-	do { \
-		Assert((cm) == TOAST_PGLZ_COMPRESSION_ID || \
-			   (cm) == TOAST_LZ4_COMPRESSION_ID); \
-		((toast_pointer).va_extinfo = \
-			(len) | ((uint32) (cm) << VARLENA_EXTSIZE_BITS)); \
-	} while (0)
 
 /*
  * Testing whether an externally-stored value is compressed now requires
@@ -393,5 +436,41 @@ typedef struct
  (VARATT_EXTERNAL_GET_EXTSIZE(toast_pointer) < \
   (toast_pointer).va_rawsize - VARHDRSZ)
 
+/* Extended compression flag (0b11) marks use of extended compression methods */
+#define VARATT_CE_FLAG             0x3
+
+/*
+ * Extended compression info encoding (8-bit layout):
+ *
+ *   bit 7   6   5   4   3   2   1   0
+ *  +---+---+---+---+---+---+---+---+
+ *  |      compression_id       | M |
+ *  +---+---+---+---+---+---+---+---+
+ *
+ * • Bits 7–1: Compression method ID offset (cmid − 2)
+ *   Range: [0…127] maps to compression ID [2…129]
+ *
+ * • Bit 0 (M): Metadata flag (currently unused, always 0)
+ *   Reserved for future use to indicate extra compression metadata
+ */
+#define VARATT_CE_SET_COMPRESS_METHOD(va_ecinfo, cmid)		\
+	do {													\
+		uint8 _cmid = (uint8)(cmid);						\
+		Assert(_cmid >= 2 && _cmid <= 129);					\
+		(va_ecinfo) = (uint32)((_cmid - 2) << 1);			\
+	} while (0)
+
+#define VARATT_CE_GET_COMPRESS_METHOD(ecinfo)	((((uint8)(ecinfo) >> 1) & 0x7F) + 2)
+
+/* Test if varattrib_4b uses extended compression format */
+#define VARATT_IS_EXTENDED_COMPRESSED(ptr) \
+	((((varattrib_4b *)(ptr))->va_compressed_ext.va_tcinfo >> VARLENA_EXTSIZE_BITS) \
+		== VARATT_CE_FLAG)
+
+/* Access compressed data payload in extended format */
+#define VARDATA_EXTENDED_COMPRESSED(ptr) \
+	(((varattrib_4b *)(ptr))->va_compressed_ext.va_data)
+
+#define VARHDRSZ_EXTENDED_COMPRESSED	(offsetof(varattrib_4b, va_compressed_ext.va_data))
 
 #endif

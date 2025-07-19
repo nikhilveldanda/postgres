@@ -38,6 +38,15 @@ static struct varlena *ondisk_oid_create_external_data(toast_external_data data)
 static uint64 ondisk_oid_get_new_value(Relation toastrel, Oid indexid,
 									   AttrNumber attnum);
 
+/* Callbacks for VARTAG_ONDISK_CE_OID */
+static void ondisk_ce_oid_to_external_data(struct varlena *attr,
+										   toast_external_data *data);
+static struct varlena *ondisk_ce_oid_create_external_data(toast_external_data data);
+
+/* Callbacks for VARTAG_ONDISK_CE_INT8 */
+static void ondisk_ce_int8_to_external_data(struct varlena *attr,
+											toast_external_data *data);
+static struct varlena *ondisk_ce_int8_create_external_data(toast_external_data data);
 
 /*
  * Size of an EXTERNAL datum that contains a standard TOAST pointer
@@ -50,6 +59,18 @@ static uint64 ondisk_oid_get_new_value(Relation toastrel, Oid indexid,
  * value).
  */
 #define TOAST_POINTER_OID_SIZE (VARHDRSZ_EXTERNAL + sizeof(varatt_external_oid))
+
+/*
+ * Size of an EXTERNAL datum that contains a TOAST pointer which supports extended compression methods
+ * (OID value).
+ */
+#define TOAST_POINTER_CE_OID_SIZE (VARHDRSZ_EXTERNAL + sizeof(varatt_external_ce_oid))
+
+/*
+ * Size of an EXTERNAL datum that contains a TOAST pointer which supports extended compression methods
+ * (int8 value).
+ */
+#define TOAST_POINTER_CE_INT8_SIZE (VARHDRSZ_EXTERNAL + sizeof(varatt_external_ce_int8))
 
 /*
  * For now there are only two types, all defined in this file.  For now this
@@ -72,11 +93,25 @@ static const toast_external_info toast_external_infos[TOAST_EXTERNAL_INFO_SIZE] 
 		.create_external_data = ondisk_int8_create_external_data,
 		.get_new_value = ondisk_int8_get_new_value,
 	},
+	[VARTAG_ONDISK_CE_INT8] = {
+		.toast_pointer_size = TOAST_POINTER_CE_INT8_SIZE,
+		.maximum_chunk_size = TOAST_MAX_CHUNK_SIZE_INT8,
+		.to_external_data = ondisk_ce_int8_to_external_data,
+		.create_external_data = ondisk_ce_int8_create_external_data,
+		.get_new_value = ondisk_int8_get_new_value,
+	},
 	[VARTAG_ONDISK_OID] = {
 		.toast_pointer_size = TOAST_POINTER_OID_SIZE,
 		.maximum_chunk_size = TOAST_MAX_CHUNK_SIZE_OID,
 		.to_external_data = ondisk_oid_to_external_data,
 		.create_external_data = ondisk_oid_create_external_data,
+		.get_new_value = ondisk_oid_get_new_value,
+	},
+	[VARTAG_ONDISK_CE_OID] = {
+		.toast_pointer_size = TOAST_POINTER_CE_OID_SIZE,
+		.maximum_chunk_size = TOAST_MAX_CHUNK_SIZE_OID,
+		.to_external_data = ondisk_ce_oid_to_external_data,
+		.create_external_data = ondisk_ce_oid_create_external_data,
 		.get_new_value = ondisk_oid_get_new_value,
 	},
 };
@@ -108,7 +143,7 @@ toast_external_info_get_pointer_size(uint8 tag)
 static void
 ondisk_int8_to_external_data(struct varlena *attr, toast_external_data *data)
 {
-	varatt_external_int8	external;
+	varatt_external_int8 external;
 
 	VARATT_EXTERNAL_GET_POINTER(external, attr);
 	data->rawsize = external.va_rawsize;
@@ -117,7 +152,7 @@ ondisk_int8_to_external_data(struct varlena *attr, toast_external_data *data)
 	if (VARATT_EXTERNAL_IS_COMPRESSED(external))
 	{
 		data->extsize = VARATT_EXTERNAL_GET_EXTSIZE(external);
-		data->compression_method = VARATT_EXTERNAL_GET_COMPRESS_METHOD(external);
+		data->compression_method = external.va_extinfo >> VARLENA_EXTSIZE_BITS;
 	}
 	else
 	{
@@ -141,10 +176,10 @@ ondisk_int8_create_external_data(toast_external_data data)
 
 	if (data.compression_method != TOAST_INVALID_COMPRESSION_ID)
 	{
+		/* Regular variants only support basic compression methods */
+		Assert(!CompressionMethodIdIsExtended(data.compression_method));
 		/* Set size and compression method, in a single field. */
-		VARATT_EXTERNAL_SET_SIZE_AND_COMPRESS_METHOD(external,
-													 data.extsize,
-													 data.compression_method);
+		external.va_extinfo = (uint32) data.extsize | ((uint32) data.compression_method << VARLENA_EXTSIZE_BITS);
 	}
 	else
 		external.va_extinfo = data.extsize;
@@ -165,8 +200,8 @@ ondisk_int8_get_new_value(Relation toastrel, Oid indexid,
 						  AttrNumber attnum)
 {
 	uint64		new_value;
-	SysScanDesc	scan;
-	ScanKeyData	key;
+	SysScanDesc scan;
+	ScanKeyData key;
 	bool		collides = false;
 
 retry:
@@ -181,8 +216,8 @@ retry:
 	CHECK_FOR_INTERRUPTS();
 
 	/*
-	 * Check if the new value picked already exists in the toast relation.
-	 * If there is a conflict, retry.
+	 * Check if the new value picked already exists in the toast relation. If
+	 * there is a conflict, retry.
 	 */
 	ScanKeyInit(&key,
 				attnum,
@@ -206,7 +241,7 @@ retry:
 static void
 ondisk_oid_to_external_data(struct varlena *attr, toast_external_data *data)
 {
-	varatt_external_oid		external;
+	varatt_external_oid external;
 
 	VARATT_EXTERNAL_GET_POINTER(external, attr);
 	data->rawsize = external.va_rawsize;
@@ -218,7 +253,7 @@ ondisk_oid_to_external_data(struct varlena *attr, toast_external_data *data)
 	if (VARATT_EXTERNAL_IS_COMPRESSED(external))
 	{
 		data->extsize = VARATT_EXTERNAL_GET_EXTSIZE(external);
-		data->compression_method = VARATT_EXTERNAL_GET_COMPRESS_METHOD(external);
+		data->compression_method = external.va_extinfo >> VARLENA_EXTSIZE_BITS;
 	}
 	else
 	{
@@ -240,10 +275,10 @@ ondisk_oid_create_external_data(toast_external_data data)
 
 	if (data.compression_method != TOAST_INVALID_COMPRESSION_ID)
 	{
+		/* Regular variants only support basic compression methods */
+		Assert(!CompressionMethodIdIsExtended(data.compression_method));
 		/* Set size and compression method, in a single field. */
-		VARATT_EXTERNAL_SET_SIZE_AND_COMPRESS_METHOD(external,
-													 data.extsize,
-													 data.compression_method);
+		external.va_extinfo = (uint32) data.extsize | ((uint32) data.compression_method << VARLENA_EXTSIZE_BITS);
 	}
 	else
 		external.va_extinfo = data.extsize;
@@ -263,4 +298,117 @@ ondisk_oid_get_new_value(Relation toastrel, Oid indexid,
 						 AttrNumber attnum)
 {
 	return GetNewOidWithIndex(toastrel, indexid, attnum);
+}
+
+/* Callbacks for VARTAG_ONDISK_CE_OID */
+static void
+ondisk_ce_oid_to_external_data(struct varlena *attr, toast_external_data *data)
+{
+	varatt_external_ce_oid external;
+
+	VARATT_EXTERNAL_GET_POINTER(external, attr);
+	data->rawsize = external.va_rawsize;
+
+	/*
+	 * External size and compression methods are stored in the different
+	 * fields, extract.
+	 */
+	if (VARATT_EXTERNAL_IS_COMPRESSED(external))
+	{
+		data->extsize = VARATT_EXTERNAL_GET_EXTSIZE(external);
+		data->compression_method = VARATT_CE_GET_COMPRESS_METHOD(external.va_ecinfo);
+	}
+	else
+	{
+		data->extsize = external.va_extinfo;
+		data->compression_method = TOAST_INVALID_COMPRESSION_ID;
+	}
+
+	data->value = (uint64) external.va_valueid;
+	data->toastrelid = external.va_toastrelid;
+}
+
+static struct varlena *
+ondisk_ce_oid_create_external_data(toast_external_data data)
+{
+	struct varlena *result = NULL;
+	varatt_external_ce_oid external;
+
+	external.va_rawsize = data.rawsize;
+
+	if (data.compression_method != TOAST_INVALID_COMPRESSION_ID)
+	{
+		Assert(CompressionMethodIdIsExtended(data.compression_method));
+		/* Set size and compression method. */
+		external.va_extinfo = (uint32) data.extsize | (VARATT_CE_FLAG << VARLENA_EXTSIZE_BITS);
+		VARATT_CE_SET_COMPRESS_METHOD(external.va_ecinfo, data.compression_method);
+	}
+	else
+		external.va_extinfo = data.extsize;
+
+	external.va_toastrelid = data.toastrelid;
+	external.va_valueid = (Oid) data.value;
+
+	result = (struct varlena *) palloc(TOAST_POINTER_CE_OID_SIZE);
+	SET_VARTAG_EXTERNAL(result, VARTAG_ONDISK_CE_OID);
+	memcpy(VARDATA_EXTERNAL(result), &external, sizeof(external));
+
+	return result;
+}
+
+/* Callbacks for VARTAG_ONDISK_CE_INT8 */
+static void
+ondisk_ce_int8_to_external_data(struct varlena *attr, toast_external_data *data)
+{
+	varatt_external_ce_int8 external;
+
+	VARATT_EXTERNAL_GET_POINTER(external, attr);
+	data->rawsize = external.va_rawsize;
+
+	/*
+	 * External size and compression methods are stored in the different
+	 * fields
+	 */
+	if (VARATT_EXTERNAL_IS_COMPRESSED(external))
+	{
+		data->extsize = VARATT_EXTERNAL_GET_EXTSIZE(external);
+		data->compression_method = VARATT_CE_GET_COMPRESS_METHOD(external.va_ecinfo);
+	}
+	else
+	{
+		data->extsize = external.va_extinfo;
+		data->compression_method = TOAST_INVALID_COMPRESSION_ID;
+	}
+
+	data->value = (((uint64) external.va_valueid_hi) << 32) |
+		external.va_valueid_lo;
+	data->toastrelid = external.va_toastrelid;
+}
+
+static struct varlena *
+ondisk_ce_int8_create_external_data(toast_external_data data)
+{
+	struct varlena *result = NULL;
+	varatt_external_ce_int8 external;
+
+	external.va_rawsize = data.rawsize;
+
+	if (data.compression_method != TOAST_INVALID_COMPRESSION_ID)
+	{
+		/* Set size and compression method. */
+		external.va_extinfo = (uint32) data.extsize | (VARATT_CE_FLAG << VARLENA_EXTSIZE_BITS);
+		VARATT_CE_SET_COMPRESS_METHOD(external.va_ecinfo, data.compression_method);
+	}
+	else
+		external.va_extinfo = data.extsize;
+
+	external.va_toastrelid = data.toastrelid;
+	external.va_valueid_hi = (((uint64) data.value) >> 32);
+	external.va_valueid_lo = (uint32) data.value;
+
+	result = (struct varlena *) palloc(TOAST_POINTER_CE_INT8_SIZE);
+	SET_VARTAG_EXTERNAL(result, VARTAG_ONDISK_CE_INT8);
+	memcpy(VARDATA_EXTERNAL(result), &external, sizeof(external));
+
+	return result;
 }

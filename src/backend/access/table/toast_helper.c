@@ -15,6 +15,7 @@
 #include "postgres.h"
 
 #include "access/detoast.h"
+#include "access/toast_external.h"
 #include "access/toast_helper.h"
 #include "access/toast_internals.h"
 #include "catalog/pg_type_d.h"
@@ -51,10 +52,23 @@ toast_tuple_init(ToastTupleContext *ttc)
 		Form_pg_attribute att = TupleDescAttr(tupleDesc, i);
 		struct varlena *old_value;
 		struct varlena *new_value;
+		uint8		vartag = VARTAG_ONDISK_OID;
+		char		cmethod = att->attcompression;
+
+		if (!CompressionMethodIsValid(cmethod))
+			cmethod = default_toast_compression;
+
+		if (ttc->toast_type == TOAST_TYPE_OID)
+			vartag = CompressionMethodIsExtended(cmethod) ? VARTAG_ONDISK_CE_OID : VARTAG_ONDISK_OID;
+		else if (ttc->toast_type == TOAST_TYPE_INT8)
+			vartag = CompressionMethodIsExtended(cmethod) ? VARTAG_ONDISK_CE_INT8 : VARTAG_ONDISK_INT8;
+		else
+			Assert(false);
 
 		ttc->ttc_attr[i].tai_colflags = 0;
 		ttc->ttc_attr[i].tai_oldexternal = NULL;
 		ttc->ttc_attr[i].tai_compression = att->attcompression;
+		ttc->ttc_attr[i].toast_pointer_size = toast_external_info_get_pointer_size(vartag);
 
 		if (ttc->ttc_oldvalues != NULL)
 		{
@@ -171,10 +185,10 @@ toast_tuple_init(ToastTupleContext *ttc)
  * The column must have attstorage EXTERNAL or EXTENDED if check_main is
  * false, and must have attstorage MAIN if check_main is true.
  *
- * The column must have a minimum size of MAXALIGN(tcc_toast_pointer_size);
- * if not, no benefit is to be expected by compressing it.  The TOAST
- * pointer size is given by the caller, depending on the type of TOAST
- * table we are dealing with.
+ * Each column must have a minimum size of MAXALIGN(toast_pointer_size) for
+ * that specific column; if not, no benefit is to be expected by compressing it.
+ * The TOAST pointer size varies per column based on the TOAST table type
+ * (OID vs INT8) and different variants used for that specific attribute.
  *
  * The return value is the index of the biggest suitable column, or
  * -1 if there is none.
@@ -190,16 +204,13 @@ toast_tuple_find_biggest_attribute(ToastTupleContext *ttc,
 	int32		skip_colflags = TOASTCOL_IGNORE;
 	int			i;
 
-	/* Define the lower-bound */
-	biggest_size = MAXALIGN(ttc->ttc_toast_pointer_size);
-	Assert(biggest_size != 0);
-
 	if (for_compression)
 		skip_colflags |= TOASTCOL_INCOMPRESSIBLE;
 
 	for (i = 0; i < numAttrs; i++)
 	{
 		Form_pg_attribute att = TupleDescAttr(tupleDesc, i);
+		int32		min_size_for_column;
 
 		if ((ttc->ttc_attr[i].tai_colflags & skip_colflags) != 0)
 			continue;
@@ -214,7 +225,19 @@ toast_tuple_find_biggest_attribute(ToastTupleContext *ttc,
 			att->attstorage != TYPSTORAGE_EXTERNAL)
 			continue;
 
-		if (ttc->ttc_attr[i].tai_size > biggest_size)
+		/*
+		 * Each column has its own minimum size threshold based on its TOAST
+		 * pointer size
+		 */
+		min_size_for_column = MAXALIGN(ttc->ttc_attr[i].toast_pointer_size);
+		Assert(min_size_for_column > 0);
+
+		/*
+		 * Only consider this column if it's bigger than its specific
+		 * threshold AND bigger than current biggest
+		 */
+		if (ttc->ttc_attr[i].tai_size > min_size_for_column &&
+			ttc->ttc_attr[i].tai_size > biggest_size)
 		{
 			biggest_attno = i;
 			biggest_size = ttc->ttc_attr[i].tai_size;

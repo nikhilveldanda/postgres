@@ -160,18 +160,6 @@ toast_save_datum(Relation rel, Datum value,
 	toast_typid = TupleDescAttr(toasttupDesc, 0)->atttypid;
 	Assert(toast_typid == OIDOID || toast_typid == INT8OID);
 
-	/*
-	 * Grab the information for toast_external_data.
-	 *
-	 * Note: if we support multiple external vartags for a single value
-	 * type, we would need to be smarter in the vartag selection.
-	 */
-	if (toast_typid == OIDOID)
-		tag = VARTAG_ONDISK_OID;
-	else if (toast_typid == INT8OID)
-		tag = VARTAG_ONDISK_INT8;
-	info = toast_external_get_info(tag);
-
 	/* Open all the toast indexes and look for the valid one */
 	validIndex = toast_open_indexes(toastrel,
 									RowExclusiveLock,
@@ -243,6 +231,18 @@ toast_save_datum(Relation rel, Datum value,
 		toast_pointer.toastrelid = RelationGetRelid(toastrel);
 
 	/*
+	 * Grab the information for toast_external_data.
+	 *
+	 * Note: if we support multiple external vartags for a single value type,
+	 * we would need to be smarter in the vartag selection.
+	 */
+	if (toast_typid == OIDOID)
+		tag = CompressionMethodIdIsExtended(toast_pointer.compression_method) ? VARTAG_ONDISK_CE_OID : VARTAG_ONDISK_OID;
+	else if (toast_typid == INT8OID)
+		tag = CompressionMethodIdIsExtended(toast_pointer.compression_method) ? VARTAG_ONDISK_CE_INT8 : VARTAG_ONDISK_INT8;
+	info = toast_external_get_info(tag);
+
+	/*
 	 * Choose a new value to use as the value ID for this toast value, be it
 	 * for OID or int8-based TOAST relations.
 	 *
@@ -254,8 +254,7 @@ toast_save_datum(Relation rel, Datum value,
 	 * value (which is a corner case, but possible if the table's attstorage
 	 * options have been changed), we have to pick a value ID that doesn't
 	 * conflict with either new or existing toast value IDs.  If the TOAST
-	 * table uses 8-byte value IDs, we should not really care much about
-	 * that.
+	 * table uses 8-byte value IDs, we should not really care much about that.
 	 */
 	if (!OidIsValid(rel->rd_toastoid))
 	{

@@ -152,7 +152,7 @@ heap_toast_insert_or_update(Relation rel, HeapTuple newtup, HeapTuple oldtup,
 	{
 		HeapTuple	atttuple;
 		Form_pg_attribute atttoast;
-		uint8		vartag = VARTAG_ONDISK_OID;
+		ToastTypeId toast_type = TOAST_TYPE_INVALID;
 
 		/*
 		 * XXX: This is very unlikely efficient, but it is not possible to
@@ -166,32 +166,22 @@ heap_toast_insert_or_update(Relation rel, HeapTuple newtup, HeapTuple oldtup,
 		atttoast = (Form_pg_attribute) GETSTRUCT(atttuple);
 
 		if (atttoast->atttypid == OIDOID)
-			vartag = VARTAG_ONDISK_OID;
+			toast_type = TOAST_TYPE_OID;
 		else if (atttoast->atttypid == INT8OID)
-			vartag = VARTAG_ONDISK_INT8;
+			toast_type = TOAST_TYPE_INT8;
 		else
 			Assert(false);
-		ttc.ttc_toast_pointer_size =
-			toast_external_info_get_pointer_size(vartag);
+		ttc.toast_type = toast_type;
 		ReleaseSysCache(atttuple);
 	}
 	else
 	{
 		/*
-		 * No TOAST relation to rely on, which is a case possible when
-		 * dealing with partitioned tables, for example.  Hence, do a best
-		 * guess based on the GUC default_toast_type.
+		 * No TOAST relation to rely on, which is a case possible when dealing
+		 * with partitioned tables, for example.  Hence, do a best guess based
+		 * on the GUC default_toast_type.
 		 */
-		uint8	vartag = VARTAG_ONDISK_OID;
-
-		if (default_toast_type == TOAST_TYPE_INT8)
-			vartag = VARTAG_ONDISK_INT8;
-		else if (default_toast_type == TOAST_TYPE_OID)
-			vartag = VARTAG_ONDISK_OID;
-		else
-			Assert(false);
-		ttc.ttc_toast_pointer_size =
-			toast_external_info_get_pointer_size(vartag);
+		ttc.toast_type = default_toast_type;
 	}
 
 	ttc.ttc_rel = rel;
@@ -693,9 +683,7 @@ heap_fetch_toast_slice(Relation toastrel, uint64 valueid, int32 attrsize,
 	int			endchunk;
 	int			num_indexes;
 	int			validIndex;
-	int32		max_chunk_size;
-	const toast_external_info *info;
-	uint8		tag = VARTAG_INDIRECT;  /* init value does not matter */
+	int32		max_chunk_size = TOAST_MAX_CHUNK_SIZE_OID;
 	Oid			toast_typid = InvalidOid;
 
 	/* Look for the valid index of toast relation */
@@ -708,25 +696,22 @@ heap_fetch_toast_slice(Relation toastrel, uint64 valueid, int32 attrsize,
 	 * Grab the information for toast_external_data.
 	 *
 	 * Note: there is no access to the vartag of the original varlena from
-	 * which we are trying to retrieve the chunks from the TOAST relation,
-	 * so guess the external TOAST pointer information to use depending
-	 * on the attribute of the TOAST value.  If we begin to support multiple
-	 * external TOAST pointers for a single attribute type, we would need
-	 * to pass down this information from the upper callers.  This is
-	 * currently on required for the maximum chunk_size.
+	 * which we are trying to retrieve the chunks from the TOAST relation, so
+	 * guess the external TOAST pointer information to use depending on the
+	 * attribute of the TOAST value.  If we begin to support multiple external
+	 * TOAST pointers for a single attribute type, we would need to pass down
+	 * this information from the upper callers.  This is currently on required
+	 * for the maximum chunk_size.
 	 */
 	toast_typid = TupleDescAttr(toastrel->rd_att, 0)->atttypid;
 	Assert(toast_typid == OIDOID || toast_typid == INT8OID);
 
 	if (toast_typid == OIDOID)
-		tag = VARTAG_ONDISK_OID;
+		max_chunk_size = TOAST_MAX_CHUNK_SIZE_OID;
 	else if (toast_typid == INT8OID)
-		tag = VARTAG_ONDISK_INT8;
+		max_chunk_size = TOAST_MAX_CHUNK_SIZE_INT8;
 	else
 		Assert(false);
-
-	info = toast_external_get_info(tag);
-	max_chunk_size = info->maximum_chunk_size;
 
 	totalchunks = ((attrsize - 1) / max_chunk_size) + 1;
 	startchunk = sliceoffset / max_chunk_size;
