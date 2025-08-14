@@ -64,6 +64,7 @@ backend_sources += files(
   'numeric.c',
   'numutils.c',
   'oid.c',
+  'oid8.c',
   'oracle_compat.c',
   'orderedsetaggs.c',
   'partitionfuncs.c',
