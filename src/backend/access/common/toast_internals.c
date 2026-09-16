@@ -29,7 +29,7 @@
 static bool toastrel_valueid_exists(Relation toastrel, Oid8 valueid);
 static bool toastid_valueid_exists(Oid toastrelid, Oid8 valueid);
 static varlena *toast_pointer_build(vartag_external tag, const void *fixed,
-									Size fixedsize);
+									Size fixedsize, ToastCompressionId cmid);
 
 /* ----------
  * toast_compress_datum -
@@ -190,6 +190,8 @@ toast_save_datum(Relation rel, Datum value,
 	uint32		va_extinfo;
 	Oid8		va_valueid;
 	Oid			va_toastrelid;
+	ToastCompressionId cmid = TOAST_INVALID_COMPRESSION_ID;
+	bool		pointer_long = false;
 
 	Assert(!VARATT_IS_EXTERNAL(dval));
 
@@ -215,7 +217,9 @@ toast_save_datum(Relation rel, Datum value,
 	 *
 	 * va_extinfo stored the actual size of the data payload in the toast
 	 * records and the compression method in first 2 bits if data is
-	 * compressed.
+	 * compressed.  Methods that don't fit in those bits are flagged there
+	 * with VARLENA_COMPRESS_METHOD_LONG and require the long form of the
+	 * TOAST pointer, which carries the actual method ID in an extra byte.
 	 */
 	if (VARATT_IS_SHORT(dval))
 	{
@@ -226,7 +230,7 @@ toast_save_datum(Relation rel, Datum value,
 	}
 	else if (VARATT_IS_COMPRESSED(dval))
 	{
-		uint32		cmid = VARDATA_COMPRESSED_GET_COMPRESS_METHOD(dval);
+		cmid = VARDATA_COMPRESSED_GET_COMPRESS_METHOD(dval);
 
 		data_p = VARDATA(dval);
 		data_todo = VARSIZE(dval) - VARHDRSZ;
@@ -236,7 +240,14 @@ toast_save_datum(Relation rel, Datum value,
 		/* set external size and compression method */
 		Assert(cmid == TOAST_PGLZ_COMPRESSION_ID ||
 			   cmid == TOAST_LZ4_COMPRESSION_ID);
-		va_extinfo = data_todo | (cmid << VARLENA_EXTSIZE_BITS);
+		if (toast_compression_id_needs_cmid_byte(cmid))
+		{
+			pointer_long = true;
+			va_extinfo = data_todo |
+				((uint32) VARLENA_COMPRESS_METHOD_LONG << VARLENA_EXTSIZE_BITS);
+		}
+		else
+			va_extinfo = data_todo | ((uint32) cmid << VARLENA_EXTSIZE_BITS);
 
 		/* Assert that the numbers look like it's compressed */
 		Assert(VARATT_EXTINFO_IS_COMPRESSED(va_extinfo, va_rawsize));
@@ -381,7 +392,8 @@ toast_save_datum(Relation rel, Datum value,
 	table_close(toastrel, NoLock);
 
 	/*
-	 * Create the TOAST pointer value that we'll return
+	 * Create the TOAST pointer value that we'll return.  The long form is the
+	 * plain one followed by the compression method ID byte.
 	 */
 	if (toast_typid == OID8OID)
 	{
@@ -392,8 +404,8 @@ toast_save_datum(Relation rel, Datum value,
 		VARATT_EXTERNAL_OID8_SET_VALUEID(&toast_pointer, va_valueid);
 		toast_pointer.va_toastrelid = va_toastrelid;
 
-		result = toast_pointer_build(VARTAG_ONDISK_OID8,
-									 &toast_pointer, sizeof(toast_pointer));
+		result = toast_pointer_build(pointer_long ? VARTAG_ONDISK_OID8_LONG : VARTAG_ONDISK_OID8,
+									 &toast_pointer, sizeof(toast_pointer), cmid);
 	}
 	else
 	{
@@ -404,8 +416,8 @@ toast_save_datum(Relation rel, Datum value,
 		toast_pointer.va_valueid = (Oid) va_valueid;
 		toast_pointer.va_toastrelid = va_toastrelid;
 
-		result = toast_pointer_build(VARTAG_ONDISK_OID,
-									 &toast_pointer, sizeof(toast_pointer));
+		result = toast_pointer_build(pointer_long ? VARTAG_ONDISK_OID_LONG : VARTAG_ONDISK_OID,
+									 &toast_pointer, sizeof(toast_pointer), cmid);
 	}
 
 	return PointerGetDatum(result);
@@ -415,20 +427,35 @@ toast_save_datum(Relation rel, Datum value,
  * toast_pointer_build -
  *
  *	Build an on-disk TOAST pointer datum of the given tag from its fixed
- *	part (a varatt_external_oid or varatt_external_oid8).
+ *	part (a varatt_external_oid or varatt_external_oid8), appending the
+ *	compression method ID byte for the long-form tags.
  * ----------
  */
 static varlena *
-toast_pointer_build(vartag_external tag, const void *fixed, Size fixedsize)
+toast_pointer_build(vartag_external tag, const void *fixed, Size fixedsize,
+					ToastCompressionId cmid)
 {
 	varlena    *result;
+	char	   *data;
 
 	Assert(VARTAG_IS_ONDISK(tag));
-	Assert(VARTAG_SIZE(tag) == fixedsize);
+	Assert(VARTAG_SIZE(tag) == fixedsize +
+		   (VARTAG_IS_ONDISK_LONG(tag) ? VARATT_EXTERNAL_CMID_SIZE : 0));
 
 	result = (varlena *) palloc(VARHDRSZ_EXTERNAL + VARTAG_SIZE(tag));
 	SET_VARTAG_EXTERNAL(result, tag);
-	memcpy(VARDATA_EXTERNAL(result), fixed, fixedsize);
+	data = VARDATA_EXTERNAL(result);
+	memcpy(data, fixed, fixedsize);
+
+	if (VARTAG_IS_ONDISK_LONG(tag))
+	{
+		uint8		cmid_byte;
+
+		Assert(cmid != TOAST_INVALID_COMPRESSION_ID &&
+			   toast_compression_id_needs_cmid_byte(cmid));
+		cmid_byte = (uint8) cmid;
+		memcpy(data + fixedsize, &cmid_byte, sizeof(cmid_byte));
+	}
 
 	return result;
 }
