@@ -36,7 +36,8 @@ toast_compress_set_size_and_method(varlena *ptr, uint32 rawsize,
 
 	Assert(rawsize > 0 && rawsize <= VARLENA_EXTSIZE_MASK);
 	Assert(cmid == TOAST_PGLZ_COMPRESSION_ID ||
-		   cmid == TOAST_LZ4_COMPRESSION_ID);
+		   cmid == TOAST_LZ4_COMPRESSION_ID ||
+		   cmid == TOAST_ZSTD_COMPRESSION_ID);
 
 	if (toast_compression_id_needs_cmid_byte(cmid))
 	{
