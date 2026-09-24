@@ -23,9 +23,10 @@
  * Fill in the header of a compressed-in-line datum: the original data size
  * (excluding header) and the compression method.
  *
- * The compression routine must already have laid out the datum with
- * VARHDRSZ_COMPRESSED bytes of header, since the compressed data starts
- * right after it.  The varlena length word is not touched here.
+ * The compression routine must already have laid out the datum with the
+ * header size appropriate for its method (VARHDRSZ_COMPRESSED or
+ * VARHDRSZ_COMPRESSED_LONG), since the compressed data starts right after it.
+ * The varlena length word is not touched here.
  */
 static inline void
 toast_compress_set_size_and_method(varlena *ptr, uint32 rawsize,
@@ -37,8 +38,17 @@ toast_compress_set_size_and_method(varlena *ptr, uint32 rawsize,
 	Assert(cmid == TOAST_PGLZ_COMPRESSION_ID ||
 		   cmid == TOAST_LZ4_COMPRESSION_ID);
 
-	va->va_compressed.va_tcinfo =
-		rawsize | ((uint32) cmid << VARLENA_EXTSIZE_BITS);
+	if (toast_compression_id_needs_cmid_byte(cmid))
+	{
+		varattrib_4b_long *va_long = (varattrib_4b_long *) ptr;
+
+		va_long->va_tcinfo =
+			rawsize | ((uint32) VARLENA_COMPRESS_METHOD_LONG << VARLENA_EXTSIZE_BITS);
+		va_long->va_cmid = (uint8) cmid;
+	}
+	else
+		va->va_compressed.va_tcinfo =
+			rawsize | ((uint32) cmid << VARLENA_EXTSIZE_BITS);
 }
 
 extern Datum toast_compress_datum(Datum value, char cmethod);
