@@ -29,6 +29,7 @@
 
 static bool toastrel_valueid_exists(Relation toastrel, Oid8 valueid);
 static bool toastid_valueid_exists(Oid toastrelid, Oid8 valueid);
+static varlena *toast_pointer_build(vartag_external tag, const void *ptr);
 
 /* ----------
  * toast_compress_datum -
@@ -391,9 +392,7 @@ toast_save_datum(Relation rel, Datum value,
 		VARATT_EXTERNAL_OID8_SET_VALUEID(&toast_pointer, va_valueid);
 		toast_pointer.va_toastrelid = va_toastrelid;
 
-		result = (varlena *) palloc(TOAST_OID8_POINTER_SIZE);
-		SET_VARTAG_EXTERNAL(result, VARTAG_ONDISK_OID8);
-		memcpy(VARDATA_EXTERNAL(result), &toast_pointer, sizeof(toast_pointer));
+		result = toast_pointer_build(VARTAG_ONDISK_OID8, &toast_pointer);
 	}
 	else
 	{
@@ -404,12 +403,30 @@ toast_save_datum(Relation rel, Datum value,
 		toast_pointer.va_valueid = (Oid) va_valueid;
 		toast_pointer.va_toastrelid = va_toastrelid;
 
-		result = (varlena *) palloc(TOAST_OID_POINTER_SIZE);
-		SET_VARTAG_EXTERNAL(result, VARTAG_ONDISK_OID);
-		memcpy(VARDATA_EXTERNAL(result), &toast_pointer, sizeof(toast_pointer));
+		result = toast_pointer_build(VARTAG_ONDISK_OID, &toast_pointer);
 	}
 
 	return PointerGetDatum(result);
+}
+
+/* ----------
+ * toast_pointer_build -
+ *
+ *	Build an on-disk TOAST pointer datum of the given tag from the
+ *	varatt_external_oid or varatt_external_oid8 at ptr.
+ * ----------
+ */
+static varlena *
+toast_pointer_build(vartag_external tag, const void *ptr)
+{
+	varlena    *result;
+
+	result = (varlena *) palloc(VARHDRSZ_EXTERNAL + VARTAG_SIZE(tag));
+	SET_VARTAG_EXTERNAL(result, tag);
+	Assert(VARATT_IS_EXTERNAL_ONDISK(result));
+	memcpy(VARDATA_EXTERNAL(result), ptr, VARTAG_SIZE(tag));
+
+	return result;
 }
 
 /* ----------
