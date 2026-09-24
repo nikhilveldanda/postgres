@@ -92,7 +92,7 @@ toast_compress_datum(Datum value, char cmethod)
 	{
 		/* successful compression */
 		Assert(cmid != TOAST_INVALID_COMPRESSION_ID);
-		TOAST_COMPRESS_SET_SIZE_AND_COMPRESS_METHOD(tmp, valsize, cmid);
+		toast_compress_set_size_and_method(tmp, valsize, cmid);
 		return PointerGetDatum(tmp);
 	}
 	else
